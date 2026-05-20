@@ -1,0 +1,496 @@
+openapi: 3.0.3
+info:
+  title: Quizzz / ExamPro API
+  version: 1.0.0
+  description: |
+    REST API for educational exams: auth, questions (with optional `image_urls`), exams, sessions, and media upload to Cloudinary.
+
+    **Base URL:** `/api/v1` (e.g. `http://localhost:8080/api/v1`). Health: `GET /health`.
+
+    **Auth:** most routes require `Authorization: Bearer <JWT>` from `POST /api/v1/auth/login`.
+
+servers:
+  - url: /
+    description: Server root (e.g. http://localhost:8080)
+
+tags:
+  - name: health
+  - name: auth
+  - name: media
+  - name: questions
+  - name: question-banks
+  - name: exams
+  - name: sessions
+  - name: results
+  - name: users
+  - name: teacher-students
+  - name: parser
+  - name: dashboard
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Liveness check
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: healthy }
+                  service: { type: string }
+
+  /api/v1/auth/register:
+    post:
+      tags: [auth]
+      summary: Register a new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Created
+        "400":
+          description: Validation error
+
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Login and receive JWT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Token and user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  user:
+                    $ref: "#/components/schemas/User"
+
+  /api/v1/auth/me:
+    get:
+      tags: [auth]
+      summary: Current user
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: User profile
+
+  /api/v1/media/upload:
+    post:
+      tags: [media]
+      summary: Upload an image file (Cloudinary)
+      description: |
+        `multipart/form-data` with field **`file`**. Returns HTTPS `url` suitable for `image_urls` on questions.
+
+        Requires teacher or admin role. Configure env: `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`, optional `CLOUDINARY_FOLDER`, `MAX_UPLOAD_MB`.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Upload result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaUploadResponse"
+        "400":
+          description: Missing file or too large
+        "503":
+          description: Cloudinary not configured
+
+  /api/v1/public/media/upload:
+    post:
+      tags: [media]
+      summary: Upload an image file (public, no auth)
+      description: |
+        `multipart/form-data` with field **`file`**. Returns HTTPS `url` suitable for `image_urls` on questions.
+
+        Public endpoint (no JWT). Intended for parser/integration flows. Configure env:
+        `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`, optional
+        `CLOUDINARY_FOLDER`, `MAX_UPLOAD_MB`.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Upload result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaUploadResponse"
+        "400":
+          description: Missing file or too large
+        "503":
+          description: Cloudinary not configured
+
+  /api/v1/questions:
+    get:
+      tags: [questions]
+      summary: List questions
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: search
+          schema: { type: string }
+        - in: query
+          name: type
+          schema: { type: string }
+        - in: query
+          name: difficulty
+          schema: { type: string }
+        - in: query
+          name: created_by
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Questions list
+    post:
+      tags: [questions]
+      summary: Create question
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QuestionCreate"
+      responses:
+        "201":
+          description: Created question
+
+  /api/v1/questions/import:
+    post:
+      tags: [questions]
+      summary: Bulk import questions (JSON array)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: "#/components/schemas/QuestionCreate"
+      responses:
+        "200":
+          description: Import summary
+
+  /api/v1/questions/{id}:
+    parameters:
+      - $ref: "#/components/parameters/QuestionId"
+    get:
+      tags: [questions]
+      summary: Get question by ID
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Question
+    put:
+      tags: [questions]
+      summary: Update question
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QuestionUpdate"
+      responses:
+        "200":
+          description: Updated
+    delete:
+      tags: [questions]
+      summary: Delete question
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Deleted
+
+  /api/v1/exams:
+    get:
+      tags: [exams]
+      summary: List exams
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List
+    post:
+      tags: [exams]
+      summary: Create exam
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: Created
+
+  /api/v1/exams/{id}:
+    get:
+      tags: [exams]
+      summary: Get exam
+      security:
+        - bearerAuth: []
+    put:
+      tags: [exams]
+      summary: Update exam
+      security:
+        - bearerAuth: []
+    delete:
+      tags: [exams]
+      summary: Delete exam
+      security:
+        - bearerAuth: []
+
+  /api/v1/sessions:
+    post:
+      tags: [sessions]
+      summary: Start exam session
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Session with student-safe questions (includes `image_urls` when set)
+
+  /api/v1/sessions/{id}:
+    get:
+      tags: [sessions]
+      summary: Get session state
+      security:
+        - bearerAuth: []
+    put:
+      tags: [sessions]
+      summary: Submit answer or finish (see handler)
+      security:
+        - bearerAuth: []
+
+  /api/v1/results:
+    get:
+      tags: [results]
+      summary: List results
+      security:
+        - bearerAuth: []
+
+  /api/v1/users:
+    get:
+      tags: [users]
+      summary: List users (admin)
+      security:
+        - bearerAuth: []
+
+  /api/v1/teacher/students:
+    get:
+      tags: [teacher-students]
+      summary: List students (teacher only)
+      description: Returns users with role `student`. Optional `search` filters name/email (ILIKE).
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: search
+          schema: { type: string }
+      responses:
+        "200":
+          description: "{ students, count }"
+        "403":
+          description: Not a teacher
+
+  /api/v1/teacher/students/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [teacher-students]
+      summary: Get one student
+      security:
+        - bearerAuth: []
+    put:
+      tags: [teacher-students]
+      summary: Update student (name, email, avatar)
+      description: Does not change role or password. Target must be a student.
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                avatar: { type: string, nullable: true }
+
+  /api/v1/parser/parse:
+    post:
+      tags: [parser]
+      summary: Parse questions from text and/or images (AI vision when images sent)
+      description: Requires GEMINI_API_KEY or ZAI_API_KEY for multimodal parsing. Plain text fallback without key.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text: { type: string, description: Question text draft or empty if images-only }
+                images:
+                  type: array
+                  maxItems: 8
+                  items:
+                    type: string
+                    description: data:image/jpeg;base64,... style data URLs
+              required: []
+      responses:
+        '200':
+          description: ParseResult JSON (success true/false, questions, errors)
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/v1/dashboard/teacher/{id}:
+    get:
+      tags: [dashboard]
+      summary: Teacher dashboard stats
+      security:
+        - bearerAuth: []
+
+  /api/v1/dashboard/student/{id}:
+    get:
+      tags: [dashboard]
+      summary: Student dashboard
+      security:
+        - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    QuestionId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string, format: email }
+        role:
+          type: string
+          enum: [teacher, student, admin]
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+
+    RegisterRequest:
+      type: object
+      required: [name, email, password, role]
+      properties:
+        name: { type: string }
+        email: { type: string, format: email }
+        password: { type: string }
+        role:
+          type: string
+          enum: [teacher, student, admin]
+
+    MediaUploadResponse:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+          description: HTTPS URL (Cloudinary secure_url)
+        public_id: { type: string }
+        format: { type: string }
+        width: { type: integer }
+        height: { type: integer }
+        bytes: { type: integer }
+
+    QuestionCreate:
+      type: object
+      required: [type, title, content, correct_answer, difficulty, points]
+      properties:
+        type:
+          type: string
+          enum: [multiple-choice, true-false, short-answer, essay, matching, fill-blank]
+        title: { type: string }
+        content: { type: string }
+        options:
+          type: array
+          items: { type: string }
+        correct_answer: { type: string }
+        explanation: { type: string }
+        difficulty:
+          type: string
+          enum: [easy, medium, hard]
+        points: { type: integer }
+        tags:
+          type: array
+          items: { type: string }
+        category_id: { type: string, format: uuid }
+        image_urls:
+          type: array
+          description: Image URLs (HTTPS), e.g. from `POST /api/v1/media/upload` or external links
+          items: { type: string, format: uri }
+
+    QuestionUpdate:
+      allOf:
+        - $ref: "#/components/schemas/QuestionCreate"
+        - type: object
+          description: Same fields as create; `image_urls` may be null to leave unchanged, [] to clear.
