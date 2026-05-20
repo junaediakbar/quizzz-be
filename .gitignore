@@ -1,0 +1,46 @@
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# Go build artifacts
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+coverage.html
+*.prof
+*.pprof
+
+# Local uploads (legacy UPLOAD_DIR=./uploads)
+/uploads/
+
+# Dependency directories (uncomment if using vendoring locally)
+# /vendor/
+
+# IDE & editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Debug & logs
+*.log
+debug
+debug.test
+
+# Temporary files
+tmp/
+temp/
+*.tmp
