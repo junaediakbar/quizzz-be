@@ -225,6 +225,34 @@ func (r *ExamRepository) Delete(id string) error {
 	return nil
 }
 
+// ReplaceExamQuestions replaces all questions linked to an exam (transactional).
+func (r *ExamRepository) ReplaceExamQuestions(examID string, links []ExamQuestionLink) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM exam_questions WHERE exam_id = $1`, examID); err != nil {
+		return fmt.Errorf("clear exam questions: %w", err)
+	}
+
+	for _, link := range links {
+		q := `
+			INSERT INTO exam_questions (id, exam_id, question_id, order_index, points)
+			VALUES ($1, $2, $3, $4, $5)
+		`
+		if _, err := tx.Exec(q, generateUUID(), examID, link.QuestionID, link.OrderIndex, link.Points); err != nil {
+			return fmt.Errorf("add question %s: %w", link.QuestionID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
 // AddQuestionToExam adds a question to an exam
 func (r *ExamRepository) AddQuestionToExam(examID, questionID string, order, points int) error {
 	query := `

@@ -160,9 +160,23 @@ func listNumberedMigrations(dir string) ([]string, error) {
 	return out, nil
 }
 
+// stripSQLLineComments removes -- line comments so a leading comment does not cause
+// the whole statement block to be skipped (e.g. migrations that start with "-- ...").
+func stripSQLLineComments(s string) string {
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if idx := strings.Index(line, "--"); idx >= 0 {
+			line = line[:idx]
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
 // execSQLScript runs statements, properly handling PostgreSQL dollar-quoted strings.
 func execSQLScript(db *sql.DB, sqlContent string) error {
-	sqlContent = strings.TrimSpace(sqlContent)
+	sqlContent = strings.TrimSpace(stripSQLLineComments(sqlContent))
 	if sqlContent == "" {
 		return nil
 	}

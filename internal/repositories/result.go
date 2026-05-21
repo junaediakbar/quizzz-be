@@ -213,3 +213,20 @@ func (r *ResultRepository) UpdateResultScore(tx *sql.Tx, resultID string, score 
 	_, err := tx.Exec(q, resultID, score, passed)
 	return err
 }
+
+// DeleteByID removes the student's exam session for a result (cascades result, reviews, proctoring).
+func (r *ResultRepository) DeleteByID(resultID string) error {
+	res, err := r.FindByID(resultID)
+	if err != nil {
+		return err
+	}
+	del, err := r.db.Exec(`DELETE FROM exam_sessions WHERE id = $1`, res.SessionID)
+	if err != nil {
+		return fmt.Errorf("failed to delete session: %w", err)
+	}
+	n, _ := del.RowsAffected()
+	if n == 0 {
+		return ErrSessionNotFound
+	}
+	return nil
+}

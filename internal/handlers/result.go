@@ -222,3 +222,43 @@ func (h *ResultHandler) GetResultsByStudent(c *fiber.Ctx) error {
 	}
 	return c.JSON(fiber.Map{"results": items, "count": len(items)})
 }
+
+// DeleteResult DELETE /results/:id — teacher/admin removes a submission so the student can retake.
+func (h *ResultHandler) DeleteResult(c *fiber.Ctx) error {
+	role := c.Locals("user_role").(string)
+	if role != "teacher" && role != "admin" {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "Forbidden"})
+	}
+	userID := c.Locals("user_id").(string)
+	id := c.Params("id")
+	if id == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "Result ID is required"})
+	}
+
+	res, err := h.resultRepo.FindByID(id)
+	if err != nil {
+		if errors.Is(err, repositories.ErrResultNotFound) {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Result not found"})
+		}
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load result"})
+	}
+
+	if role == "teacher" {
+		ex, err := h.examRepo.FindByID(res.ExamID)
+		if err != nil || ex.CreatedBy != userID {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "Forbidden"})
+		}
+	}
+
+	if err := h.resultRepo.DeleteByID(id); err != nil {
+		if errors.Is(err, repositories.ErrResultNotFound) {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Result not found"})
+		}
+		if errors.Is(err, repositories.ErrSessionNotFound) {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Session not found"})
+		}
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to delete result"})
+	}
+
+	return c.Status(http.StatusNoContent).Send(nil)
+}

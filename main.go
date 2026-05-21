@@ -222,6 +222,7 @@ func main() {
 	results.Get("/student/:studentId", resultHandler.GetResultsByStudent)
 	results.Get("/:id", resultHandler.GetResult)
 	results.Put("/:id/grade", resultHandler.GradeResult)
+	results.Delete("/:id", resultHandler.DeleteResult)
 
 	// AI Parser
 	parser := api.Group("/parser")

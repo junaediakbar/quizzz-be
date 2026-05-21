@@ -50,6 +50,7 @@ type UpdateExamRequest struct {
 	Grade          *string            `json:"grade,omitempty"`
 	Config         *models.ExamConfig `json:"config,omitempty"`
 	Status         *string            `json:"status,omitempty"`
+	QuestionIDs    []string           `json:"question_ids,omitempty"`
 	ScheduledStart *time.Time         `json:"scheduled_start,omitempty"`
 	ScheduledEnd   *time.Time         `json:"scheduled_end,omitempty"`
 }
@@ -258,9 +259,16 @@ func (h *ExamHandler) UpdateExam(c *fiber.Ctx) error {
 	// Get existing exam
 	exam, err := h.examRepo.FindByID(id)
 	if err != nil {
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{
-			"error": "Exam not found",
-		})
+		if errors.Is(err, repositories.ErrExamNotFound) {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Exam not found"})
+		}
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load exam"})
+	}
+
+	role := c.Locals("user_role").(string)
+	userID := c.Locals("user_id").(string)
+	if role == "teacher" && exam.CreatedBy != userID {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "Forbidden"})
 	}
 
 	// Update fields
@@ -296,7 +304,53 @@ func (h *ExamHandler) UpdateExam(c *fiber.Ctx) error {
 		})
 	}
 
-	return c.JSON(exam)
+	if req.QuestionIDs != nil {
+		if len(req.QuestionIDs) == 0 {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+				"error": "At least one question is required",
+			})
+		}
+		links := make([]repositories.ExamQuestionLink, 0, len(req.QuestionIDs))
+		for i, questionID := range req.QuestionIDs {
+			points := 5
+			if question, qerr := h.questionRepo.FindByID(questionID); qerr == nil {
+				points = question.Points
+			}
+			links = append(links, repositories.ExamQuestionLink{
+				QuestionID: questionID,
+				OrderIndex: i + 1,
+				Points:     points,
+			})
+		}
+		if err := h.examRepo.ReplaceExamQuestions(id, links); err != nil {
+			log.Printf("ReplaceExamQuestions: %v", err)
+			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Failed to update exam questions",
+			})
+		}
+	}
+
+	links, err := h.examRepo.GetExamQuestionLinks(id)
+	if err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load questions"})
+	}
+	var qs []map[string]interface{}
+	for _, link := range links {
+		q, err := h.questionRepo.FindByID(link.QuestionID)
+		if err != nil {
+			continue
+		}
+		m := present.QuestionFullJSON(q)
+		m["order"] = link.OrderIndex
+		m["exam_points"] = link.Points
+		qs = append(qs, m)
+	}
+
+	type teacherExam struct {
+		models.Exam
+		Questions []map[string]interface{} `json:"questions"`
+	}
+	return c.JSON(teacherExam{Exam: *exam, Questions: qs})
 }
 
 // DeleteExam handles DELETE /exams/:id

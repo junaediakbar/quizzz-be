@@ -341,7 +341,10 @@ func (h *SessionHandler) SubmitExam(c *fiber.Ctx) error {
 	now := time.Now()
 	timeSpent := 0
 	if s.StartedAt != nil {
-		timeSpent = int(now.Sub(*s.StartedAt).Seconds())
+		secs := int(now.Sub(*s.StartedAt).Seconds())
+		if secs > 0 {
+			timeSpent = secs
+		}
 	}
 
 	totalScore := 0

@@ -1,4 +1,4 @@
--- Snapshot judul & kelas ujian pada hasil (nama tetap sesuai saat ujian diselesaikan)
+/* Snapshot judul & kelas ujian pada hasil (nama tetap sesuai saat ujian diselesaikan) */
 ALTER TABLE exam_results ADD COLUMN IF NOT EXISTS exam_title VARCHAR(255);
 ALTER TABLE exam_results ADD COLUMN IF NOT EXISTS exam_grade VARCHAR(50);
 
