@@ -106,10 +106,10 @@ func BuildResultDetail(
 					qm["options"] = opts
 				}
 			}
-			if q.ImageURLs != nil && *q.ImageURLs != "" {
-				var imgs []string
-				if err := json.Unmarshal([]byte(*q.ImageURLs), &imgs); err == nil {
-					qm["image_urls"] = imgs
+			if imgs := ParseQuestionImages(q.ImageURLs); len(imgs) > 0 {
+				qm["images"] = imgs
+				if flat := FlatImageURLs(imgs); len(flat) > 0 {
+					qm["image_urls"] = flat
 				}
 			}
 			if showKeys && q.Explanation != nil {

@@ -200,10 +200,11 @@ func (h *SessionHandler) buildStudentQuestions(exam *models.Exam, links []reposi
 		if len(opts) > 0 {
 			studentQ["options"] = opts
 		}
-		// Add image URLs if present
-		imgs := present.ImageURLsSlice(q.ImageURLs)
-		if len(imgs) > 0 {
-			studentQ["image_urls"] = imgs
+		if imgs := present.ParseQuestionImages(q.ImageURLs); len(imgs) > 0 {
+			studentQ["images"] = imgs
+			if flat := present.FlatImageURLs(imgs); len(flat) > 0 {
+				studentQ["image_urls"] = flat
+			}
 		}
 		if q.CategoryID != nil {
 			studentQ["category_id"] = *q.CategoryID

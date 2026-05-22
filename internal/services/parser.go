@@ -314,6 +314,8 @@ func ParseQuestionsWithAI(text string, images []string) (*ParseResult, error) {
 		return ParseQuestionsSimple(text), nil
 	}
 
+	text = stripMediaMarkerLines(text)
+
 	systemPrompt := `You are an expert at parsing educational questions.
 Parse the given text and/or exam images into structured JSON questions.
 
@@ -326,7 +328,7 @@ Rules:
 6. Generate relevant tags based on the subject matter
 7. Create a brief title for each question
 8. If the source is an image (screenshot, handwritten, printed paper), read all visible questions; describe figures/diagrams briefly inside "content" when needed
-9. If the text contains lines like [!Link Image] or [Link Image], they mark where an attached diagram belongs. Omit such placeholder lines from output; merge what appears in the corresponding image(s) into the preceding question's "content" (short phrase if diagram is decorative). With multiple images attached, associate by order of placeholders and image order unless the combined image clearly shows otherwise.
+9. Lines like [!above URL], [!below URL], [!option-b URL], [!URL], or [!Link Image] are image placeholders only — never separate questions. Omit them from "content". Count ONLY numbered stems (1., 2., 3., …) to decide how many questions exist.
 
 Output ONLY valid JSON array in this exact format:
 [
@@ -343,7 +345,7 @@ Output ONLY valid JSON array in this exact format:
     "tags": ["subject", "topic"]
   }
 ]
-(Omit "options" for non-MCQ. Omit "image_urls" unless explicit HTTPS image links appear in user text for that question.)
+(Omit "options" for non-MCQ. Include "image_urls" when the user text has [!https://…] or other explicit image URLs for that question.)
 
 For true/false questions remove "options" from output; correct_answer is "true" or "false".
 
@@ -415,13 +417,63 @@ For short-answer, essay, matching, fill-blank: omit "options" when not applicabl
 	}, nil
 }
 
+// isMediaMarkerLine detects image placeholder lines that must not become question stems.
+func isMediaMarkerLine(line string) bool {
+	s := strings.TrimSpace(line)
+	if s == "" {
+		return false
+	}
+	patterns := []string{
+		`(?i)^\[!\s*link\s*image\s*\]$`,
+		`(?i)^\[link\s*image\]$`,
+		`(?i)^\[!\s*link\s*image\s*\]\s*:\s*https?://`,
+		`(?i)^\[!\s*(above|below|after)\s*:?\s*https?://`,
+		`(?i)^\[!\s*(above|below|after)\s+https?://`,
+		`(?i)^\[!\s*option\s*[-_\s]*[a-d]\s*:?\s*https?://`,
+		`(?i)^\[!\s*option\s*[-_\s]*[a-d]\s+https?://`,
+		`(?i)^\[!\s*https?://[^\]]+\]\s*$`,
+		`(?i)^https?://\S+\.(png|jpe?g|gif|webp)(\?[^\s]*)?\s*$`,
+	}
+	for _, p := range patterns {
+		if matched, _ := regexp.MatchString(p, s); matched {
+			return true
+		}
+	}
+	return false
+}
+
+// stripMediaMarkerLines removes standalone image marker lines (AI / simple parser input).
+func stripMediaMarkerLines(text string) string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if !isMediaMarkerLine(line) {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+func appendUniqueURL(urls []string, url string) []string {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return urls
+	}
+	for _, u := range urls {
+		if u == url {
+			return urls
+		}
+	}
+	return append(urls, url)
+}
+
 // ensureFirstQuestionNumbered prepends "1. " when the text has no "N. " line so the
 // line-based parser can open a question (users often paste the stem without "1.").
 func ensureFirstQuestionNumbered(text string) string {
 	lines := strings.Split(text, "\n")
 	for _, line := range lines {
 		s := strings.TrimSpace(line)
-		if s == "" {
+		if s == "" || isMediaMarkerLine(s) {
 			continue
 		}
 		if matched, _ := regexp.MatchString(`^\d+\.\s`, s); matched {
@@ -430,10 +482,14 @@ func ensureFirstQuestionNumbered(text string) string {
 		break
 	}
 	for i, line := range lines {
-		if strings.TrimSpace(line) == "" {
+		s := strings.TrimSpace(line)
+		if s == "" || isMediaMarkerLine(s) {
 			continue
 		}
-		lines[i] = "1. " + strings.TrimSpace(line)
+		if matched, _ := regexp.MatchString(`^\d+\.\s`, s); matched {
+			return text
+		}
+		lines[i] = "1. " + s
 		return strings.Join(lines, "\n")
 	}
 	return text
@@ -460,17 +516,32 @@ func ParseQuestionsSimple(text string) *ParseResult {
 	var options []string
 	var questionNumber int
 	var warnings []string
+	var pendingImageURLs []string
+
+	flushPendingImages := func(q *ParsedQuestion) {
+		if q == nil {
+			return
+		}
+		for _, url := range pendingImageURLs {
+			q.ImageURLs = appendUniqueURL(q.ImageURLs, url)
+		}
+		pendingImageURLs = nil
+	}
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		// Penanda gambar di templat teks (fallback parser tanpa AI)
-		if matched, _ := regexp.MatchString(`(?i)^\[!\s*link\s*image\s*\]$`, line); matched {
-			continue
-		}
-		if matched, _ := regexp.MatchString(`(?i)^\[link\s*image\]$`, line); matched {
+		if isMediaMarkerLine(line) {
+			if m := regexp.MustCompile(`(?i)^\[!\s*(https?://[^\]]+)\]\s*$`).FindStringSubmatch(line); len(m) > 1 {
+				url := strings.TrimRight(strings.TrimSpace(m[1]), "),.;")
+				if url != "" {
+					pendingImageURLs = append(pendingImageURLs, url)
+				}
+			} else if m := regexp.MustCompile(`(?i)https?://[^\s\]]+`).FindString(line); m != "" {
+				pendingImageURLs = append(pendingImageURLs, strings.TrimRight(m, "),.;"))
+			}
 			continue
 		}
 
@@ -504,6 +575,7 @@ func ParseQuestionsSimple(text string) *ParseResult {
 				Points:     5,
 				Tags:       []string{"general"},
 			}
+			flushPendingImages(currentQuestion)
 			options = []string{}
 		} else if currentQuestion != nil {
 			// Check for options (a), b), c), d) or a., b., c., d.)
@@ -549,6 +621,7 @@ func ParseQuestionsSimple(text string) *ParseResult {
 		if currentQuestion.Type == "multiple-choice" && len(options) > 0 {
 			currentQuestion.Options = options
 		}
+		flushPendingImages(currentQuestion)
 		questions = append(questions, *currentQuestion)
 	}
 

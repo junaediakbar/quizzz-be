@@ -32,9 +32,12 @@ func QuestionForStudentJSON(q *models.Question, examPoints int) map[string]inter
 	if len(tags) > 0 {
 		m["tags"] = tags
 	}
-	imgs := imageURLsSlice(q.ImageURLs)
+	imgs := ParseQuestionImages(q.ImageURLs)
 	if len(imgs) > 0 {
-		m["image_urls"] = imgs
+		m["images"] = imgs
+		if flat := FlatImageURLs(imgs); len(flat) > 0 {
+			m["image_urls"] = flat
+		}
 	}
 	if q.CategoryID != nil {
 		m["category_id"] = *q.CategoryID
@@ -65,20 +68,9 @@ func tagsSlice(tags *string) []string {
 	return out
 }
 
-func imageURLsSlice(raw *string) []string {
-	if raw == nil || *raw == "" {
-		return nil
-	}
-	var out []string
-	if err := json.Unmarshal([]byte(*raw), &out); err != nil {
-		return nil
-	}
-	return out
-}
-
-// ImageURLsSlice is the exported version
+// ImageURLsSlice returns flat URLs for backward-compatible clients.
 func ImageURLsSlice(raw *string) []string {
-	return imageURLsSlice(raw)
+	return FlatImageURLs(ParseQuestionImages(raw))
 }
 
 // QuestionFullJSON returns a teacher/admin view with answers.

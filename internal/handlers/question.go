@@ -80,8 +80,8 @@ type CreateQuestionRequest struct {
 	Points        int      `json:"points"`
 	Tags          []string `json:"tags,omitempty"`
 	CategoryID    string   `json:"category_id,omitempty"`
-	// ImageURLs: HTTPS links (e.g. Cloudinary) or any public image URL; also set via POST /media/upload
-	ImageURLs []string `json:"image_urls,omitempty"`
+	// image_urls: string[] (legacy) atau [{url, position, option_index?}]
+	ImageURLs json.RawMessage `json:"image_urls,omitempty"`
 }
 
 type UpdateQuestionRequest struct {
@@ -95,7 +95,7 @@ type UpdateQuestionRequest struct {
 	Points        int      `json:"points"`
 	Tags          []string `json:"tags,omitempty"`
 	CategoryID    *string  `json:"category_id,omitempty"`
-	ImageURLs     *[]string `json:"image_urls,omitempty"` // nil = leave unchanged, &[] = clear, &[urls] = replace
+	ImageURLs *json.RawMessage `json:"image_urls,omitempty"` // nil = leave unchanged
 }
 
 // normalizeQuestionPayload fixes AI/import quirks so INSERT matches DB CHECK constraints.
@@ -313,9 +313,11 @@ func (h *QuestionHandler) CreateQuestion(c *fiber.Ctx) error {
 	}
 
 	if len(req.ImageURLs) > 0 {
-		imgJSON, _ := json.Marshal(req.ImageURLs)
-		s := string(imgJSON)
-		question.ImageURLs = &s
+		s, err := present.NormalizeImageURLsInput(req.ImageURLs)
+		if err != nil {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "Invalid image_urls"})
+		}
+		question.ImageURLs = s
 	}
 
 	if err := h.questionRepo.Create(question); err != nil {
@@ -391,12 +393,14 @@ func (h *QuestionHandler) UpdateQuestion(c *fiber.Ctx) error {
 	}
 
 	if req.ImageURLs != nil {
-		if len(*req.ImageURLs) == 0 {
+		if len(*req.ImageURLs) == 0 || string(*req.ImageURLs) == "null" {
 			question.ImageURLs = nil
 		} else {
-			imgJSON, _ := json.Marshal(*req.ImageURLs)
-			s := string(imgJSON)
-			question.ImageURLs = &s
+			s, err := present.NormalizeImageURLsInput(*req.ImageURLs)
+			if err != nil {
+				return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "Invalid image_urls"})
+			}
+			question.ImageURLs = s
 		}
 	}
 
@@ -533,9 +537,12 @@ func (h *QuestionHandler) ImportQuestions(c *fiber.Ctx) error {
 		}
 
 		if len(req.ImageURLs) > 0 {
-			imgJSON, _ := json.Marshal(req.ImageURLs)
-			s := string(imgJSON)
-			question.ImageURLs = &s
+			s, err := present.NormalizeImageURLsInput(req.ImageURLs)
+			if err != nil {
+				failed = append(failed, importFailure{Index: i, Error: "Invalid image_urls"})
+				continue
+			}
+			question.ImageURLs = s
 		}
 
 		if err := h.questionRepo.Create(question); err != nil {
