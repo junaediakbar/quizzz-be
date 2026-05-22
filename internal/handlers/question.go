@@ -436,8 +436,81 @@ type importFailure struct {
 	Error string `json:"error"`
 }
 
+// importQuestionPayload accepts image_urls as string[] or [{url, position, option_index?}].
+type importQuestionPayload struct {
+	Type          string          `json:"type"`
+	Title         string          `json:"title"`
+	Content       string          `json:"content"`
+	Options       []string        `json:"options,omitempty"`
+	CorrectAnswer string          `json:"correct_answer"`
+	Explanation   string          `json:"explanation,omitempty"`
+	Difficulty    string          `json:"difficulty"`
+	Points        int             `json:"points"`
+	Tags          []string        `json:"tags,omitempty"`
+	CategoryID    string          `json:"category_id,omitempty"`
+	ImageURLs     json.RawMessage `json:"image_urls,omitempty"`
+	Images        json.RawMessage `json:"images,omitempty"` // alias
+}
+
+func decodeImportQuestions(raw []byte) ([]CreateQuestionRequest, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("empty body")
+	}
+
+	var payloads []importQuestionPayload
+
+	if raw[0] == '{' {
+		var wrapped struct {
+			Questions []importQuestionPayload `json:"questions"`
+		}
+		if err := json.Unmarshal(raw, &wrapped); err != nil {
+			return nil, fmt.Errorf(`invalid object (expected {"questions":[...]}): %w`, err)
+		}
+		payloads = wrapped.Questions
+	} else {
+		if err := json.Unmarshal(raw, &payloads); err != nil {
+			var items []json.RawMessage
+			if err2 := json.Unmarshal(raw, &items); err2 != nil {
+				return nil, fmt.Errorf("invalid array: %w", err)
+			}
+			payloads = make([]importQuestionPayload, 0, len(items))
+			for i, item := range items {
+				var p importQuestionPayload
+				if err := json.Unmarshal(item, &p); err != nil {
+					return nil, fmt.Errorf("soal index %d: %w", i, err)
+				}
+				payloads = append(payloads, p)
+			}
+		}
+	}
+
+	out := make([]CreateQuestionRequest, len(payloads))
+	for i, p := range payloads {
+		imgRaw := p.ImageURLs
+		if len(imgRaw) == 0 && len(p.Images) > 0 {
+			imgRaw = p.Images
+		}
+		out[i] = CreateQuestionRequest{
+			Type:          p.Type,
+			Title:         p.Title,
+			Content:       p.Content,
+			Options:       p.Options,
+			CorrectAnswer: p.CorrectAnswer,
+			Explanation:   p.Explanation,
+			Difficulty:    p.Difficulty,
+			Points:        p.Points,
+			Tags:          p.Tags,
+			CategoryID:    p.CategoryID,
+			ImageURLs:     imgRaw,
+		}
+	}
+	return out, nil
+}
+
 // ImportQuestions handles POST /questions/import
 // Body: JSON array [...] or wrapper {"questions":[...]} (same shape as CreateQuestionRequest).
+// image_urls: string[] atau [{"url":"…","position":"above|below|after|option","option_index":0}]
 func (h *QuestionHandler) ImportQuestions(c *fiber.Ctx) error {
 	raw := bytes.TrimSpace(c.Body())
 	if len(raw) == 0 {
@@ -446,23 +519,11 @@ func (h *QuestionHandler) ImportQuestions(c *fiber.Ctx) error {
 		})
 	}
 
-	var questions []CreateQuestionRequest
-	if raw[0] == '{' {
-		var wrapped struct {
-			Questions []CreateQuestionRequest `json:"questions"`
-		}
-		if err := json.Unmarshal(raw, &wrapped); err != nil {
-			return c.Status(http.StatusBadRequest).JSON(fiber.Map{
-				"error": `Invalid JSON object: expected {"questions":[...]}`,
-			})
-		}
-		questions = wrapped.Questions
-	} else {
-		if err := json.Unmarshal(raw, &questions); err != nil {
-			return c.Status(http.StatusBadRequest).JSON(fiber.Map{
-				"error": `Invalid JSON array: expected [...] of CreateQuestionRequest`,
-			})
-		}
+	questions, err := decodeImportQuestions(raw)
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": err.Error(),
+		})
 	}
 
 	if len(questions) == 0 {

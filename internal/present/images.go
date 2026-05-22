@@ -2,6 +2,7 @@ package present
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -123,5 +124,5 @@ func NormalizeImageURLsInput(raw json.RawMessage) (*string, error) {
 	if err := json.Unmarshal(raw, &asObjs); err == nil {
 		return MarshalQuestionImages(asObjs)
 	}
-	return nil, nil
+	return nil, fmt.Errorf("image_urls must be a JSON array of URL strings or objects {url, position}")
 }
