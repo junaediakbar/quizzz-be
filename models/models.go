@@ -56,13 +56,19 @@ type QuestionBankQuestion struct {
 
 // ExamConfig represents exam configuration
 type ExamConfig struct {
-	Duration        int    `json:"duration" db:"duration"`                   // in minutes
-	ShuffleQuestions bool  `json:"shuffle_questions" db:"shuffle_questions"`
-	ShuffleOptions    bool  `json:"shuffle_options" db:"shuffle_options"`
-	ShowResults       string `json:"show_results" db:"show_results"` // immediate, after-review, manual
-	AllowReview       bool  `json:"allow_review" db:"allow_review"`
-	MaxAttempts       int    `json:"max_attempts" db:"max_attempts"`
-	PassingScore      int    `json:"passing_score" db:"passing_score"`
+	Duration         int    `json:"duration" db:"duration"` // in minutes
+	ShuffleQuestions bool   `json:"shuffle_questions" db:"shuffle_questions"`
+	ShuffleOptions   bool   `json:"shuffle_options" db:"shuffle_options"`
+	ShowResults      string `json:"show_results" db:"show_results"` // immediate, after-review, manual
+	AllowReview      bool   `json:"allow_review" db:"allow_review"`
+	MaxAttempts      int    `json:"max_attempts" db:"max_attempts"`
+	PassingScore     int    `json:"passing_score" db:"passing_score"`
+	// Proctoring / integrity (per exam)
+	SecurityEnabled   bool `json:"security_enabled" db:"security_enabled"`
+	MaxViolations     int  `json:"max_violations" db:"max_violations"` // 0 = warn only, never auto-lock
+	RequireFullscreen bool `json:"require_fullscreen" db:"require_fullscreen"`
+	BlockCopyPaste    bool `json:"block_copy_paste" db:"block_copy_paste"`
+	DetectFocusLoss   bool `json:"detect_focus_loss" db:"detect_focus_loss"`
 }
 
 // Exam represents an exam

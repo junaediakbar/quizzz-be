@@ -167,6 +167,7 @@ func (h *SessionHandler) StartSession(c *fiber.Ctx) error {
 		"duration":   exam.Config.Duration,
 		"started_at": startedAt,
 		"answers":    answersMap,
+		"security":   exam.Config.SecurityPayload(),
 	})
 }
 

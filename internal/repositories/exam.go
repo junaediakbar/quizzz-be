@@ -68,6 +68,7 @@ func (r *ExamRepository) FindByID(id string) (*models.Exam, error) {
 	if err := json.Unmarshal(configJSON, &exam.Config); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
+	models.ApplyExamConfigDefaults(&exam.Config, configJSON)
 
 	return exam, nil
 }
@@ -145,6 +146,7 @@ func (r *ExamRepository) List(filters ExamFilters) ([]*models.Exam, error) {
 		if err := json.Unmarshal(configJSON, &exam.Config); err != nil {
 			return nil, fmt.Errorf("failed to parse config: %w", err)
 		}
+		models.ApplyExamConfigDefaults(&exam.Config, configJSON)
 
 		exams = append(exams, exam)
 	}
