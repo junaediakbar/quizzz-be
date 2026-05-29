@@ -329,6 +329,7 @@ Rules:
 7. Create a brief title for each question
 8. If the source is an image (screenshot, handwritten, printed paper), read all visible questions; describe figures/diagrams briefly inside "content" when needed
 9. Lines like [!above URL], [!below URL], [!option-b URL], [!URL], or [!Link Image] are image placeholders only — never separate questions. Omit them from "content". Count ONLY numbered stems (1., 2., 3., …) to decide how many questions exist.
+10. MATHEMATICS: Put all math expressions in LaTeX inside dollar delimiters. Inline math: $...$ (e.g. $\\sqrt{48}$, $x^2$, $\\frac{a}{b}$). Display/block equations: $$...$$. Use \\sqrt{}, ^{}, \\frac{}{}, not Unicode-only symbols (avoid bare √ or ² without LaTeX). Apply the same rule to "options", "correct_answer", and "explanation" when they contain formulas.
 
 Output ONLY valid JSON array in this exact format:
 [

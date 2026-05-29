@@ -168,14 +168,17 @@ func main() {
 	questions.Put("/:id", questionHandler.UpdateQuestion)
 	questions.Delete("/:id", questionHandler.DeleteQuestion)
 
+	// Public image proxy (tanpa auth — <img> tidak bisa kirim Bearer token)
+	api.Get("/public/media/proxy", mediaHandler.ProxyImage)
+
+	// Public media upload (no auth) for parser/integration use-cases
+	api.Post("/public/media/upload", mediaHandler.UploadImagePublic)
+
 	// Media: Cloudinary image upload (teacher/admin)
 	media := api.Group("/media")
 	media.Use(middleware.AuthMiddleware)
 	media.Use(middleware.RequireRole("teacher", "admin"))
 	media.Post("/upload", mediaHandler.UploadImage)
-
-	// Public media upload (no auth) for parser/integration use-cases
-	api.Post("/public/media/upload", mediaHandler.UploadImagePublic)
 
 	// Question banks (teacher/admin)
 	banks := api.Group("/question-banks")
