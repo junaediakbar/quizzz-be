@@ -180,9 +180,13 @@ func (r *ResultRepository) ListWithExamTitle(filters ResultListFilters) ([]ExamR
 
 func (r *ResultRepository) ListAnswerReviews(sessionID string) ([]models.AnswerReview, error) {
 	query := `
-		SELECT session_id, question_id, COALESCE(student_answer,''), COALESCE(correct_answer,''),
-			COALESCE(is_correct,false), points, max_points, feedback
-		FROM answer_reviews WHERE session_id = $1
+		SELECT ar.session_id, ar.question_id, COALESCE(ar.student_answer,''), COALESCE(ar.correct_answer,''),
+			COALESCE(ar.is_correct,false), ar.points, ar.max_points, ar.feedback
+		FROM answer_reviews ar
+		JOIN exam_sessions es ON es.id = ar.session_id
+		LEFT JOIN exam_questions eq ON eq.exam_id = es.exam_id AND eq.question_id = ar.question_id
+		WHERE ar.session_id = $1
+		ORDER BY eq.order_index ASC NULLS LAST, ar.question_id ASC
 	`
 	rows, err := r.db.Query(query, sessionID)
 	if err != nil {
