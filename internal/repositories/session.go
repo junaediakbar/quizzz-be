@@ -24,11 +24,15 @@ func (r *SessionRepository) Create(session *models.ExamSession) error {
 	}
 
 	query := `
-		INSERT INTO exam_sessions (id, exam_id, student_id, answers, status, started_at, submitted_at, time_spent, score, graded_by, graded_at)
-		VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11)
+		INSERT INTO exam_sessions (id, exam_id, student_id, answers, attempt_number, status, started_at, submitted_at, time_spent, score, graded_by, graded_at)
+		VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $12)
 	`
+	attemptNumber := session.AttemptNumber
+	if attemptNumber <= 0 {
+		attemptNumber = 1
+	}
 	_, err = r.db.Exec(query,
-		session.ID, session.ExamID, session.StudentID, answersStr,
+		session.ID, session.ExamID, session.StudentID, answersStr, attemptNumber,
 		session.Status, session.StartedAt, session.SubmittedAt, session.TimeSpent,
 		session.Score, session.GradedBy, session.GradedAt,
 	)
@@ -62,13 +66,14 @@ func (r *SessionRepository) FindByID(id string) (*models.ExamSession, error) {
 
 func (r *SessionRepository) FindByExamAndStudent(examID, studentID string) (*models.ExamSession, error) {
 	query := `
-		SELECT id, exam_id, student_id, COALESCE(answers::text, '{}'), status, started_at, submitted_at, time_spent, score, graded_by, graded_at, created_at, updated_at
+		SELECT id, exam_id, student_id, COALESCE(answers::text, '{}'), attempt_number, status, started_at, submitted_at, time_spent, score, graded_by, graded_at, created_at, updated_at
 		FROM exam_sessions WHERE exam_id = $1 AND student_id = $2
+		ORDER BY attempt_number DESC LIMIT 1
 	`
 	s := &models.ExamSession{}
 	var answersStr string
 	err := r.db.QueryRow(query, examID, studentID).Scan(
-		&s.ID, &s.ExamID, &s.StudentID, &answersStr, &s.Status,
+		&s.ID, &s.ExamID, &s.StudentID, &answersStr, &s.AttemptNumber, &s.Status,
 		&s.StartedAt, &s.SubmittedAt, &s.TimeSpent, &s.Score, &s.GradedBy, &s.GradedAt,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
@@ -80,6 +85,15 @@ func (r *SessionRepository) FindByExamAndStudent(examID, studentID string) (*mod
 	}
 	s.Answers = answersStr
 	return s, nil
+}
+
+func (r *SessionRepository) CountAttempts(examID, studentID string) (int, error) {
+	var count int
+	err := r.db.QueryRow(`SELECT COUNT(*) FROM exam_sessions WHERE exam_id = $1 AND student_id = $2`, examID, studentID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count attempts: %w", err)
+	}
+	return count, nil
 }
 
 func (r *SessionRepository) Update(session *models.ExamSession) error {

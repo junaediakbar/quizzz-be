@@ -104,6 +104,7 @@ type ExamSession struct {
 	ExamID     string     `json:"exam_id" db:"exam_id"`
 	StudentID  string     `json:"student_id" db:"student_id"`
 	Answers    string     `json:"answers" db:"answers"` // JSON object
+	AttemptNumber int     `json:"attempt_number" db:"attempt_number"`
 	Status     string     `json:"status" db:"status"`   // not-started, in-progress, submitted, graded
 	StartedAt  *time.Time `json:"started_at,omitempty" db:"started_at"`
 	SubmittedAt *time.Time `json:"submitted_at,omitempty" db:"submitted_at"`

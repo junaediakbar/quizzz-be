@@ -96,21 +96,31 @@ func (h *SessionHandler) StartSession(c *fiber.Ctx) error {
 	if err != nil && !errors.Is(err, repositories.ErrSessionNotFound) {
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load session"})
 	}
+	maxAttempts := exam.Config.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
 	if err == nil && existing.Status == "submitted" {
-		// 200 agar klien bisa mengarahkan ke hasil / dashboard, bukan error generik
-		payload := fiber.Map{
-			"already_completed": true,
-			"session_id":        existing.ID,
-			"exam_id":           exam.ID,
-			"exam_title":        exam.Title,
+		attemptsUsed, cntErr := h.sessionRepo.CountAttempts(body.ExamID, studentID)
+		if cntErr != nil {
+			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load session"})
 		}
-		if existing.Score != nil {
-			payload["score"] = *existing.Score
+		if attemptsUsed >= maxAttempts {
+			// 200 agar klien bisa mengarahkan ke hasil / dashboard, bukan error generik
+			payload := fiber.Map{
+				"already_completed": true,
+				"session_id":        existing.ID,
+				"exam_id":           exam.ID,
+				"exam_title":        exam.Title,
+			}
+			if existing.Score != nil {
+				payload["score"] = *existing.Score
+			}
+			if res, resErr := h.resultRepo.FindBySessionID(existing.ID); resErr == nil {
+				payload["result_id"] = res.ID
+			}
+			return c.JSON(payload)
 		}
-		if res, resErr := h.resultRepo.FindBySessionID(existing.ID); resErr == nil {
-			payload["result_id"] = res.ID
-		}
-		return c.JSON(payload)
 	}
 
 	var session *models.ExamSession
@@ -126,15 +136,20 @@ func (h *SessionHandler) StartSession(c *fiber.Ctx) error {
 		}
 	} else {
 		now := time.Now()
+		attemptNumber := 1
+		if err == nil {
+			attemptNumber = existing.AttemptNumber + 1
+		}
 		session = &models.ExamSession{
-			ID:        uuid.New().String(),
-			ExamID:    body.ExamID,
-			StudentID: studentID,
-			Answers:   "{}",
-			Status:    "in-progress",
-			StartedAt: &now,
-			CreatedAt: now,
-			UpdatedAt: now,
+			ID:            uuid.New().String(),
+			ExamID:        body.ExamID,
+			StudentID:     studentID,
+			Answers:       "{}",
+			AttemptNumber: attemptNumber,
+			Status:        "in-progress",
+			StartedAt:     &now,
+			CreatedAt:     now,
+			UpdatedAt:     now,
 		}
 		if err := h.sessionRepo.Create(session); err != nil {
 			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to create session"})

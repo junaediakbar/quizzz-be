@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS exam_sessions (
     exam_id UUID NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
     student_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     answers JSONB,
+    attempt_number INTEGER NOT NULL DEFAULT 1,
     status VARCHAR(20) DEFAULT 'not-started' CHECK (status IN ('not-started', 'in-progress', 'submitted', 'graded')),
     started_at TIMESTAMP,
     submitted_at TIMESTAMP,
@@ -108,7 +109,7 @@ CREATE TABLE IF NOT EXISTS exam_sessions (
     graded_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(exam_id, student_id)
+    UNIQUE(exam_id, student_id, attempt_number)
 );
 
 -- Answer Reviews table
