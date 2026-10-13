@@ -106,6 +106,64 @@ type ResultListFilters struct {
 	ExamID    string
 	StudentID string
 	TeacherID string // exams.created_by
+	Search    string // ILIKE pada nama murid / judul ujian
+	Passed    *bool  // nil = semua
+	Limit     int
+	Offset    int
+}
+
+// buildResultWhere menyusun WHERE + argumen (dipakai List dan Count agar total
+// selalu cocok dengan daftar yang dikembalikan).
+func buildResultWhere(filters ResultListFilters) (string, []interface{}) {
+	where := ""
+	args := []interface{}{}
+	argN := 1
+
+	if filters.ExamID != "" {
+		where += fmt.Sprintf(" AND er.exam_id = $%d", argN)
+		args = append(args, filters.ExamID)
+		argN++
+	}
+	if filters.StudentID != "" {
+		where += fmt.Sprintf(" AND er.student_id = $%d", argN)
+		args = append(args, filters.StudentID)
+		argN++
+	}
+	if filters.TeacherID != "" {
+		where += fmt.Sprintf(" AND e.created_by = $%d", argN)
+		args = append(args, filters.TeacherID)
+		argN++
+	}
+	if filters.Passed != nil {
+		where += fmt.Sprintf(" AND er.passed = $%d", argN)
+		args = append(args, *filters.Passed)
+		argN++
+	}
+	if filters.Search != "" {
+		where += fmt.Sprintf(
+			" AND (er.student_name ILIKE $%d OR COALESCE(er.exam_title,'') ILIKE $%d OR e.title ILIKE $%d)",
+			argN, argN, argN,
+		)
+		args = append(args, "%"+filters.Search+"%")
+		argN++
+	}
+
+	return where, args
+}
+
+// CountResults mengembalikan jumlah hasil yang cocok dengan filter (untuk pagination).
+func (r *ResultRepository) CountResults(filters ResultListFilters) (int, error) {
+	where, args := buildResultWhere(filters)
+	query := `
+		SELECT COUNT(*)
+		FROM exam_results er
+		JOIN exams e ON e.id = er.exam_id
+		WHERE 1=1` + where
+	var total int
+	if err := r.db.QueryRow(query, args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("failed to count results: %w", err)
+	}
+	return total, nil
 }
 
 // ExamResultRow wraps a result with resolved title/grade for list endpoints.
@@ -127,6 +185,7 @@ func (r *ResultRepository) List(filters ResultListFilters) ([]*models.ExamResult
 }
 
 func (r *ResultRepository) ListWithExamTitle(filters ResultListFilters) ([]ExamResultRow, error) {
+	where, args := buildResultWhere(filters)
 	query := `
 		SELECT er.id, er.session_id, er.exam_id, er.student_id, er.student_name,
 			COALESCE(NULLIF(er.exam_title, ''), e.title),
@@ -134,28 +193,19 @@ func (r *ResultRepository) ListWithExamTitle(filters ResultListFilters) ([]ExamR
 			er.score, er.max_score, er.passed, er.time_spent, er.submitted_at, er.graded_at
 		FROM exam_results er
 		JOIN exams e ON e.id = er.exam_id
-		WHERE 1=1
-	`
-	args := []interface{}{}
-	argN := 1
+		WHERE 1=1` + where + `
+		ORDER BY er.submitted_at DESC, er.id DESC`
 
-	if filters.ExamID != "" {
-		query += fmt.Sprintf(" AND er.exam_id = $%d", argN)
-		args = append(args, filters.ExamID)
+	argN := len(args) + 1
+	if filters.Limit > 0 {
+		query += fmt.Sprintf(" LIMIT $%d", argN)
+		args = append(args, filters.Limit)
 		argN++
 	}
-	if filters.StudentID != "" {
-		query += fmt.Sprintf(" AND er.student_id = $%d", argN)
-		args = append(args, filters.StudentID)
-		argN++
+	if filters.Offset > 0 {
+		query += fmt.Sprintf(" OFFSET $%d", argN)
+		args = append(args, filters.Offset)
 	}
-	if filters.TeacherID != "" {
-		query += fmt.Sprintf(" AND e.created_by = $%d", argN)
-		args = append(args, filters.TeacherID)
-		argN++
-	}
-
-	query += " ORDER BY er.submitted_at DESC"
 
 	rows, err := r.db.Query(query, args...)
 	if err != nil {

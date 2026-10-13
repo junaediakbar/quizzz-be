@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -75,7 +76,7 @@ func main() {
 	app.Use(recover.New())
 	app.Use(logger.New())
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     getEnv("FRONTEND_URL", "http://localhost:3000"),
+		AllowOrigins:     allowedCORSOrigins(),
 		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
 		AllowMethods:     "GET, POST, PUT, DELETE, PATCH",
 		AllowCredentials: true,
@@ -130,6 +131,8 @@ func main() {
 	authProtected := auth.Group("/")
 	authProtected.Use(middleware.AuthMiddleware)
 	authProtected.Get("/me", authHandler.GetCurrentUser)
+	authProtected.Put("/me", authHandler.UpdateCurrentUser)
+	authProtected.Put("/password", authHandler.ChangePassword)
 	authProtected.Post("/logout", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"message": "Logged out successfully"})
 	})
@@ -212,6 +215,7 @@ func main() {
 	sessions.Use(middleware.AuthMiddleware)
 	sessions.Post("/", sessionHandler.StartSession)
 	sessions.Post("/:id/proctoring-events", sessionHandler.LogProctoringEvent)
+	sessions.Get("/:id/proctoring-events", sessionHandler.ListProctoringEvents)
 	sessions.Get("/:id", sessionHandler.GetSession)
 	sessions.Put("/:id/answer", sessionHandler.SubmitAnswer)
 	sessions.Put("/:id/submit", sessionHandler.SubmitExam)
@@ -253,4 +257,34 @@ func getEnv(key, defaultVal string) string {
 		return defaultVal
 	}
 	return value
+}
+
+// allowedCORSOrigins returns the CORS allow-list. FRONTEND_URL may be a
+// comma-separated list; outside production the usual local dev origins are
+// added so `next dev -p 3100` (used when :3000 is taken by another project)
+// is not blocked with a bare "Failed to fetch".
+func allowedCORSOrigins() string {
+	configured := getEnv("FRONTEND_URL", "http://localhost:3000")
+	if strings.EqualFold(getEnv("ENV", "development"), "production") {
+		return configured
+	}
+	origins := strings.Split(configured, ",")
+	for _, dev := range []string{
+		"http://localhost:3000",
+		"http://localhost:3100",
+		"http://127.0.0.1:3000",
+		"http://127.0.0.1:3100",
+	} {
+		found := false
+		for _, o := range origins {
+			if strings.EqualFold(strings.TrimSpace(o), dev) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			origins = append(origins, dev)
+		}
+	}
+	return strings.Join(origins, ",")
 }

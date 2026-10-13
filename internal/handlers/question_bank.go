@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -30,6 +31,10 @@ func (h *QuestionBankHandler) List(c *fiber.Ctx) error {
 	if !ok {
 		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
+	page, err := ParsePageParams(c)
+	if err != nil {
+		return PageError(c, err)
+	}
 	role, ok := c.Locals("user_role").(string)
 	if !ok {
 		role = "teacher" // default role
@@ -40,15 +45,25 @@ func (h *QuestionBankHandler) List(c *fiber.Ctx) error {
 		createdBy = userID
 	}
 
-	banks, err := h.bankRepo.List(createdBy)
+	banks, err := h.bankRepo.List(createdBy, page.Limit, page.Offset)
 	if err != nil {
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list banks"})
 	}
-	return c.JSON(fiber.Map{"banks": banks, "count": len(banks)})
+
+	total, err := h.bankRepo.Count(createdBy)
+	if err != nil {
+		total = page.Offset + len(banks)
+	}
+
+	body := fiber.Map{"banks": banks}
+	return c.JSON(NewListMeta(len(banks), total, page).Apply(body))
 }
 
 func (h *QuestionBankHandler) Get(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	b, err := h.bankRepo.FindByID(id)
 	if err != nil {
 		if errors.Is(err, repositories.ErrBankNotFound) {
@@ -75,6 +90,14 @@ type createBankBody struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	IsPublic    bool   `json:"is_public"`
+}
+
+// updateBankBody uses pointers so an omitted field keeps its stored value
+// (previously `{}` silently flipped is_public back to false).
+type updateBankBody struct {
+	Name        *string `json:"name"`
+	Description *string `json:"description"`
+	IsPublic    *bool   `json:"is_public"`
 }
 
 func (h *QuestionBankHandler) Create(c *fiber.Ctx) error {
@@ -108,7 +131,10 @@ func (h *QuestionBankHandler) Create(c *fiber.Ctx) error {
 
 func (h *QuestionBankHandler) Update(c *fiber.Ctx) error {
 	id := c.Params("id")
-	var body createBankBody
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
+	var body updateBankBody
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "Invalid body"})
 	}
@@ -116,14 +142,16 @@ func (h *QuestionBankHandler) Update(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Not found"})
 	}
-	if body.Name != "" {
-		b.Name = body.Name
+	if body.Name != nil && strings.TrimSpace(*body.Name) != "" {
+		b.Name = strings.TrimSpace(*body.Name)
 	}
-	if body.Description != "" {
-		d := body.Description
+	if body.Description != nil {
+		d := *body.Description
 		b.Description = &d
 	}
-	b.IsPublic = body.IsPublic
+	if body.IsPublic != nil {
+		b.IsPublic = *body.IsPublic
+	}
 	if err := h.bankRepo.Update(b); err != nil {
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update"})
 	}
@@ -132,6 +160,9 @@ func (h *QuestionBankHandler) Update(c *fiber.Ctx) error {
 
 func (h *QuestionBankHandler) Delete(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	userID, ok := c.Locals("user_id").(string)
 	if !ok {
 		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
@@ -150,6 +181,9 @@ func (h *QuestionBankHandler) Delete(c *fiber.Ctx) error {
 	}
 
 	if err := h.bankRepo.Delete(id); err != nil {
+		if errors.Is(err, repositories.ErrBankNotFound) {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Question bank not found"})
+		}
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to delete"})
 	}
 	return c.SendStatus(http.StatusNoContent)
@@ -162,12 +196,22 @@ type addQBody struct {
 
 func (h *QuestionBankHandler) AddQuestion(c *fiber.Ctx) error {
 	bankID := c.Params("id")
+	if rejectInvalidUUID(c, "id", bankID) {
+		return nil
+	}
 	var body addQBody
 	if err := c.BodyParser(&body); err != nil || body.QuestionID == "" {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "question_id required"})
 	}
 	if _, err := h.bankRepo.FindByID(bankID); err != nil {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Bank not found"})
+	}
+	// Soal harus ada — id asing akan melanggar FK (500) padahal ini input salah.
+	if !validUUID(body.QuestionID) {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "Invalid question_id"})
+	}
+	if _, err := h.questionRepo.FindByID(body.QuestionID); err != nil {
+		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Question not found"})
 	}
 	if err := h.bankRepo.AddQuestion(bankID, body.QuestionID, body.Order); err != nil {
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to add"})
@@ -177,8 +221,17 @@ func (h *QuestionBankHandler) AddQuestion(c *fiber.Ctx) error {
 
 func (h *QuestionBankHandler) RemoveQuestion(c *fiber.Ctx) error {
 	bankID := c.Params("id")
+	if rejectInvalidUUID(c, "id", bankID) {
+		return nil
+	}
 	qid := c.Params("questionId")
+	if rejectInvalidUUID(c, "questionId", qid) {
+		return nil
+	}
 	if err := h.bankRepo.RemoveQuestion(bankID, qid); err != nil {
+		if errors.Is(err, repositories.ErrQuestionNotInBank) {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Question is not linked to this bank"})
+		}
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed"})
 	}
 	return c.SendStatus(http.StatusNoContent)

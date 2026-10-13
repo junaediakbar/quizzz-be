@@ -40,34 +40,55 @@ func (r *QuestionBankRepository) FindByID(id string) (*models.QuestionBank, erro
 	return b, nil
 }
 
-func (r *QuestionBankRepository) List(createdBy string) ([]*models.QuestionBank, error) {
-	q := `SELECT id, name, description, created_by, is_public, created_at, updated_at FROM question_banks`
-	args := []interface{}{}
-	if createdBy != "" {
-		q += " WHERE created_by = $1"
-		args = append(args, createdBy)
+func bankWhere(createdBy string) (string, []interface{}) {
+	if createdBy == "" {
+		return "", nil
 	}
-	q += " ORDER BY created_at DESC"
+	return " WHERE created_by = $1", []interface{}{createdBy}
+}
+
+// Count mengembalikan jumlah bank soal milik pembuat tsb.
+func (r *QuestionBankRepository) Count(createdBy string) (int, error) {
+	where, args := bankWhere(createdBy)
+	var total int
+	if err := r.db.QueryRow("SELECT COUNT(*) FROM question_banks"+where, args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("failed to count banks: %w", err)
+	}
+	return total, nil
+}
+
+// List mengambil bank soal dengan pagination (limit 0 = tanpa batas).
+func (r *QuestionBankRepository) List(createdBy string, limit, offset int) ([]*models.QuestionBank, error) {
+	where, args := bankWhere(createdBy)
+	q := `SELECT id, name, description, created_by, is_public, created_at, updated_at FROM question_banks` + where
+	q += " ORDER BY created_at DESC, id DESC"
+
+	argN := len(args) + 1
+	if limit > 0 {
+		q += fmt.Sprintf(" LIMIT $%d", argN)
+		args = append(args, limit)
+		argN++
+	}
+	if offset > 0 {
+		q += fmt.Sprintf(" OFFSET $%d", argN)
+		args = append(args, offset)
+	}
 
 	rows, err := r.db.Query(q, args...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to list banks: %w", err)
 	}
 	defer rows.Close()
 
 	var banks []*models.QuestionBank
 	for rows.Next() {
 		b := &models.QuestionBank{}
-		var isPublic sql.NullBool
-		if err := rows.Scan(&b.ID, &b.Name, &b.Description, &b.CreatedBy, &isPublic, &b.CreatedAt, &b.UpdatedAt); err != nil {
-			return nil, err
+		if err := rows.Scan(&b.ID, &b.Name, &b.Description, &b.CreatedBy, &b.IsPublic, &b.CreatedAt, &b.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan bank: %w", err)
 		}
-		b.IsPublic = isPublic.Valid && isPublic.Bool
 		banks = append(banks, b)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
+
 	return banks, nil
 }
 
@@ -78,8 +99,14 @@ func (r *QuestionBankRepository) Update(bank *models.QuestionBank) error {
 }
 
 func (r *QuestionBankRepository) Delete(id string) error {
-	_, err := r.db.Exec(`DELETE FROM question_banks WHERE id = $1`, id)
-	return err
+	res, err := r.db.Exec(`DELETE FROM question_banks WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrBankNotFound
+	}
+	return nil
 }
 
 func (r *QuestionBankRepository) AddQuestion(bankID, questionID string, order int) error {
@@ -94,8 +121,14 @@ func (r *QuestionBankRepository) AddQuestion(bankID, questionID string, order in
 }
 
 func (r *QuestionBankRepository) RemoveQuestion(bankID, questionID string) error {
-	_, err := r.db.Exec(`DELETE FROM question_bank_questions WHERE bank_id = $1 AND question_id = $2`, bankID, questionID)
-	return err
+	res, err := r.db.Exec(`DELETE FROM question_bank_questions WHERE bank_id = $1 AND question_id = $2`, bankID, questionID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrQuestionNotInBank
+	}
+	return nil
 }
 
 func (r *QuestionBankRepository) ListQuestionIDs(bankID string) ([]string, error) {

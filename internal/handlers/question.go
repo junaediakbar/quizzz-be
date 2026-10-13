@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -85,17 +84,17 @@ type CreateQuestionRequest struct {
 }
 
 type UpdateQuestionRequest struct {
-	Type          string   `json:"type"`
-	Title         string   `json:"title"`
-	Content       string   `json:"content"`
-	Options       []string `json:"options,omitempty"`
-	CorrectAnswer string   `json:"correct_answer"`
-	Explanation   *string  `json:"explanation,omitempty"`
-	Difficulty    string   `json:"difficulty"`
-	Points        int      `json:"points"`
-	Tags          []string `json:"tags,omitempty"`
-	CategoryID    *string  `json:"category_id,omitempty"`
-	ImageURLs *json.RawMessage `json:"image_urls,omitempty"` // nil = leave unchanged
+	Type          string           `json:"type"`
+	Title         string           `json:"title"`
+	Content       string           `json:"content"`
+	Options       []string         `json:"options,omitempty"`
+	CorrectAnswer string           `json:"correct_answer"`
+	Explanation   *string          `json:"explanation,omitempty"`
+	Difficulty    string           `json:"difficulty"`
+	Points        int              `json:"points"`
+	Tags          []string         `json:"tags,omitempty"`
+	CategoryID    *string          `json:"category_id,omitempty"`
+	ImageURLs     *json.RawMessage `json:"image_urls,omitempty"` // nil = leave unchanged
 }
 
 // normalizeQuestionPayload fixes AI/import quirks so INSERT matches DB CHECK constraints.
@@ -105,6 +104,25 @@ func normalizeQuestionPayload(req *CreateQuestionRequest) {
 	if req.Type == "multiple-choice" && len(req.Options) >= 2 && req.CorrectAnswer != "" {
 		req.CorrectAnswer = resolveLetterOrShortMCQAnswer(req.CorrectAnswer, req.Options)
 	}
+	if req.Type == "true-false" {
+		req.CorrectAnswer = normalizeTrueFalseAnswer(req.CorrectAnswer)
+	}
+}
+
+// normalizeTrueFalseAnswer maps Benar/Salah/B/S/True/False to the "true"/"false"
+// the grader compares against (see present.AnswersMatch).
+func normalizeTrueFalseAnswer(answer string) string {
+	v := strings.ToLower(strings.TrimSpace(answer))
+	v = strings.Trim(v, "*_`'\"()[]{}")
+	v = strings.Trim(v, ".:;!,")
+	v = strings.TrimSpace(v)
+	switch v {
+	case "true", "t", "benar", "b", "ya", "yes", "y", "betul", "correct":
+		return "true"
+	case "false", "f", "salah", "s", "tidak", "no", "n", "wrong", "incorrect":
+		return "false"
+	}
+	return answer
 }
 
 func normalizeQuestionType(t string) string {
@@ -177,26 +195,24 @@ func resolveLetterOrShortMCQAnswer(answer string, options []string) string {
 }
 
 // ListQuestions handles GET /questions
+//
+// Query: type, difficulty, category_id, created_by, search, limit, offset.
+// Respons menyertakan count (baris pada respons ini), total (seluruh hasil
+// filter), limit, offset, dan has_more.
 func (h *QuestionHandler) ListQuestions(c *fiber.Ctx) error {
-	// Get query parameters
+	page, err := ParsePageParams(c)
+	if err != nil {
+		return PageError(c, err)
+	}
+
 	filters := repositories.QuestionFilters{
 		Type:       c.Query("type", ""),
 		Difficulty: c.Query("difficulty", ""),
 		CategoryID: c.Query("category_id", ""),
 		CreatedBy:  c.Query("created_by", ""),
 		Search:     c.Query("search", ""),
-	}
-
-	if limit := c.Query("limit"); limit != "" {
-		if l, err := strconv.Atoi(limit); err == nil {
-			filters.Limit = l
-		}
-	}
-
-	if offset := c.Query("offset"); offset != "" {
-		if o, err := strconv.Atoi(offset); err == nil {
-			filters.Offset = o
-		}
+		Limit:      page.Limit,
+		Offset:     page.Offset,
 	}
 
 	questions, err := h.questionRepo.List(filters)
@@ -207,21 +223,28 @@ func (h *QuestionHandler) ListQuestions(c *fiber.Ctx) error {
 		})
 	}
 
+	total, err := h.questionRepo.Count(filters)
+	if err != nil {
+		log.Printf("ListQuestions count: %v", err)
+		total = page.Offset + len(questions)
+	}
+
 	// Convert to present format to ensure options are arrays
 	questionsJSON := make([]map[string]interface{}, len(questions))
 	for i, q := range questions {
 		questionsJSON[i] = present.QuestionFullJSON(q)
 	}
 
-	return c.JSON(fiber.Map{
-		"questions": questionsJSON,
-		"count":     len(questionsJSON),
-	})
+	body := fiber.Map{"questions": questionsJSON}
+	return c.JSON(NewListMeta(len(questionsJSON), total, page).Apply(body))
 }
 
 // GetQuestion handles GET /questions/:id
 func (h *QuestionHandler) GetQuestion(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	if id == "" {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
 			"error": "Question ID is required",
@@ -334,6 +357,9 @@ func (h *QuestionHandler) CreateQuestion(c *fiber.Ctx) error {
 // UpdateQuestion handles PUT /questions/:id
 func (h *QuestionHandler) UpdateQuestion(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	if id == "" {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
 			"error": "Question ID is required",
@@ -344,6 +370,31 @@ func (h *QuestionHandler) UpdateQuestion(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid request body",
+		})
+	}
+
+	// Same normalisation as create/import: otherwise "MCQ"/"sulit"/"Benar" would
+	// be stored verbatim and break the DB CHECK constraints or grading.
+	req.Type = normalizeQuestionType(req.Type)
+	req.Difficulty = normalizeDifficulty(req.Difficulty)
+	if req.Type == "multiple-choice" && len(req.Options) >= 2 && req.CorrectAnswer != "" {
+		req.CorrectAnswer = resolveLetterOrShortMCQAnswer(req.CorrectAnswer, req.Options)
+	}
+	if req.Type == "true-false" {
+		req.CorrectAnswer = normalizeTrueFalseAnswer(req.CorrectAnswer)
+	}
+
+	// Validate payload (sama seperti CreateQuestion) supaya body kosong tidak
+	// menabrak CHECK constraint dan berakhir sebagai 500.
+	if req.Title == "" || req.Content == "" || req.Type == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "Title, content, and type are required",
+		})
+	}
+	if !isAllowedQuestionType(req.Type) {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid question type",
+			"type":  req.Type,
 		})
 	}
 
@@ -367,15 +418,22 @@ func (h *QuestionHandler) UpdateQuestion(c *fiber.Ctx) error {
 		})
 	}
 
+	// Guru hanya boleh mengubah soal miliknya sendiri (admin bebas).
+	if role := c.Locals("user_role"); role != "admin" {
+		if userID, _ := c.Locals("user_id").(string); question.CreatedBy != userID {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "Forbidden"})
+		}
+	}
+
 	// Update fields
 	question.Type = req.Type
-	question.Title = req.Title
+	question.Title = truncateQuestionTitle(req.Title)
 	question.Content = req.Content
 	question.CorrectAnswer = req.CorrectAnswer
 	question.Explanation = req.Explanation
 	question.Difficulty = req.Difficulty
 	question.Points = req.Points
-	question.CategoryID = req.CategoryID
+	question.CategoryID = optionalValidCategoryID(derefString(req.CategoryID))
 	question.UpdatedAt = time.Now()
 
 	// Handle options
@@ -416,13 +474,33 @@ func (h *QuestionHandler) UpdateQuestion(c *fiber.Ctx) error {
 // DeleteQuestion handles DELETE /questions/:id
 func (h *QuestionHandler) DeleteQuestion(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	if id == "" {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
 			"error": "Question ID is required",
 		})
 	}
 
+	// Guru hanya boleh menghapus soal miliknya sendiri (admin bebas).
+	existing, err := h.questionRepo.FindByID(id)
+	if err != nil {
+		if errors.Is(err, repositories.ErrQuestionNotFound) {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Question not found"})
+		}
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load question"})
+	}
+	if role := c.Locals("user_role"); role != "admin" {
+		if userID, _ := c.Locals("user_id").(string); existing.CreatedBy != userID {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "Forbidden"})
+		}
+	}
+
 	if err := h.questionRepo.Delete(id); err != nil {
+		if errors.Is(err, repositories.ErrQuestionNotFound) {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Question not found"})
+		}
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to delete question",
 		})
@@ -678,7 +756,7 @@ func (h *QuestionHandler) GetQuestionsMissingOptions(c *fiber.Ctx) error {
 	if err != nil {
 		log.Printf("GetQuestionsMissingOptions error: %v", err)
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to fetch questions",
+			"error":  "Failed to fetch questions",
 			"detail": err.Error(),
 		})
 	}
@@ -741,11 +819,13 @@ func (h *QuestionHandler) BulkFixQuestionsOptions(c *fiber.Ctx) error {
 			continue
 		}
 
-		// Update options
+		// Update options — dan rapikan correct_answer supaya tetap bisa dinilai
+		// otomatis (mis. kunci lama "a" dipetakan ke opsi baru pada posisi yang sama).
 		if len(fix.Options) > 0 {
 			optionsJSON, _ := json.Marshal(fix.Options)
 			opts := string(optionsJSON)
 			question.Options = &opts
+			question.CorrectAnswer = resolveLetterOrShortMCQAnswer(question.CorrectAnswer, fix.Options)
 		}
 
 		question.UpdatedAt = time.Now()
@@ -762,4 +842,12 @@ func (h *QuestionHandler) BulkFixQuestionsOptions(c *fiber.Ctx) error {
 		"updated": updated,
 		"failed":  failed,
 	})
+}
+
+// derefString returns "" for a nil pointer (helper for optional body fields).
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

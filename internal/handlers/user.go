@@ -20,19 +20,40 @@ func NewUserAdminHandler(db *sql.DB) *UserAdminHandler {
 }
 
 func (h *UserAdminHandler) ListUsers(c *fiber.Ctx) error {
-	role := c.Query("role", "")
-	users, err := h.userRepo.List(role)
+	page, err := ParsePageParams(c)
 	if err != nil {
-		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list users"})
+		return PageError(c, err)
+	}
+
+	filters := repositories.UserFilters{
+		Role:   c.Query("role", ""),
+		Search: c.Query("search", ""),
+		Limit:  page.Limit,
+		Offset: page.Offset,
+	}
+
+	users, err := h.userRepo.List(filters)
+	if err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to fetch users"})
 	}
 	for _, u := range users {
 		u.Password = ""
 	}
-	return c.JSON(fiber.Map{"users": users, "count": len(users)})
+
+	total, err := h.userRepo.CountUsers(filters)
+	if err != nil {
+		total = page.Offset + len(users)
+	}
+
+	body := fiber.Map{"users": users}
+	return c.JSON(NewListMeta(len(users), total, page).Apply(body))
 }
 
 func (h *UserAdminHandler) GetUser(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	u, err := h.userRepo.FindByID(id)
 	if err != nil {
 		if errors.Is(err, repositories.ErrUserNotFound) {
@@ -53,6 +74,9 @@ type updateUserBody struct {
 
 func (h *UserAdminHandler) UpdateUser(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	var body updateUserBody
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "Invalid body"})
@@ -88,7 +112,13 @@ func (h *UserAdminHandler) UpdateUser(c *fiber.Ctx) error {
 
 func (h *UserAdminHandler) DeleteUser(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	if err := h.userRepo.Delete(id); err != nil {
+		if errors.Is(err, repositories.ErrUserNotFound) {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
+		}
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to delete user"})
 	}
 	return c.SendStatus(http.StatusNoContent)

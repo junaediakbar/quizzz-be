@@ -31,6 +31,9 @@ func NewDashboardHandler(db *sql.DB) *DashboardHandler {
 // TeacherDashboard GET /dashboard/teacher/:id
 func (h *DashboardHandler) TeacherDashboard(c *fiber.Ctx) error {
 	requestedID := c.Params("id")
+	if rejectInvalidUUID(c, "id", requestedID) {
+		return nil
+	}
 	userID := c.Locals("user_id").(string)
 	role := c.Locals("user_role").(string)
 
@@ -79,6 +82,9 @@ func (h *DashboardHandler) TeacherDashboard(c *fiber.Ctx) error {
 // StudentDashboard GET /dashboard/student/:id
 func (h *DashboardHandler) StudentDashboard(c *fiber.Ctx) error {
 	requestedID := c.Params("id")
+	if rejectInvalidUUID(c, "id", requestedID) {
+		return nil
+	}
 	userID := c.Locals("user_id").(string)
 	role := c.Locals("user_role").(string)
 
@@ -116,9 +122,9 @@ func (h *DashboardHandler) StudentDashboard(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"upcoming_exams":     upcomingExams,
-		"completed_exams":    completed,
-		"average_score":      avg,
-		"total_exams_taken":  len(completedRows),
+		"upcoming_exams":    upcomingExams,
+		"completed_exams":   completed,
+		"average_score":     avg,
+		"total_exams_taken": len(completedRows),
 	})
 }

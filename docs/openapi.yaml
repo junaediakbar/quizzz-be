@@ -158,6 +158,10 @@ paths:
           description: Cloudinary not configured
 
   /api/v1/questions:
+    parameters:
+      - $ref: "#/components/parameters/Limit"
+      - $ref: "#/components/parameters/Offset"
+      - $ref: "#/components/parameters/Search"
     get:
       tags: [questions]
       summary: List questions
@@ -193,6 +197,51 @@ paths:
       responses:
         "201":
           description: Created question
+
+  /api/v1/questions/export:
+    get:
+      tags: [questions]
+      summary: Export questions as JSON (teacher/admin)
+      parameters:
+        - name: created_by
+          in: query
+          schema: { type: string, format: uuid }
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: JSON attachment }
+
+  /api/v1/questions/missing-options:
+    get:
+      tags: [questions]
+      summary: Multiple-choice questions that have no options yet
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: "{ questions: [...], count }" }
+
+  /api/v1/questions/bulk-fix-options:
+    post:
+      tags: [questions]
+      summary: Replace the options of several questions at once
+      description: Also remaps `correct_answer` (letter keys follow the new option order).
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  question_id: { type: string, format: uuid }
+                  options:
+                    type: array
+                    items: { type: string }
+      responses:
+        "200": { description: "{ updated, failed }" }
 
   /api/v1/questions/import:
     post:
@@ -246,6 +295,10 @@ paths:
           description: Deleted
 
   /api/v1/exams:
+    parameters:
+      - $ref: "#/components/parameters/Limit"
+      - $ref: "#/components/parameters/Offset"
+      - $ref: "#/components/parameters/Search"
     get:
       tags: [exams]
       summary: List exams
@@ -253,15 +306,36 @@ paths:
         - bearerAuth: []
       responses:
         "200":
-          description: List
+          description: "Amplop pagination + daftar ujian"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ListEnvelope"
+                  - type: object
+                    properties:
+                      exams:
+                        type: array
+                        items: { type: object }
     post:
       tags: [exams]
       summary: Create exam
+      description: |
+        `exam_questions` can be attached either flat via `question_ids`, or grouped
+        into sections via `parts` (Bagian A/B). When `parts` is present it wins and
+        `question_ids` is ignored. Each part accepts an optional
+        `points_per_question` that overrides the question-bank points for its questions.
       security:
         - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExamCreate"
       responses:
         "201":
-          description: Created
+          description: Created (includes `parts` when the exam has sections)
 
   /api/v1/exams/{id}:
     get:
@@ -272,6 +346,7 @@ paths:
     put:
       tags: [exams]
       summary: Update exam
+      description: Same body as create. Sending `parts` replaces the previous sections and question order.
       security:
         - bearerAuth: []
     delete:
@@ -280,20 +355,46 @@ paths:
       security:
         - bearerAuth: []
 
-  /api/v1/sessions:
+  /api/v1/exams/{id}/publish:
     post:
-      tags: [sessions]
-      summary: Start exam session
+      tags: [exams]
+      summary: Publish an exam
+      description: Requires at least one question, otherwise 400.
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: Published exam }
+        "400": { description: Exam has no questions }
+
+  /api/v1/exams/{id}/analytics:
+    get:
+      tags: [exams]
+      summary: Score analytics for an exam
       security:
         - bearerAuth: []
       responses:
         "200":
-          description: Session with student-safe questions (includes `image_urls` when set)
+          description: total_participants, average_score_pct, pass_rate_pct, highest_score_pct, lowest_score_pct
+
+  /api/v1/sessions:
+    post:
+      tags: [sessions]
+      summary: Start exam session
+      description: |
+        Returns the student-safe question list plus `parts[]` (exam sections) and
+        `attempt_number`. When the student already used up `max_attempts` the
+        response is `{"already_completed": true, "result_id": …}`;
+        `max_attempts: 0` means unlimited.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Session with student-safe questions (includes `image_urls` and `part_id` when set)
 
   /api/v1/sessions/{id}:
     get:
       tags: [sessions]
-      summary: Get session state
+      summary: Get session state (owner student, or the teacher who owns the exam)
       security:
         - bearerAuth: []
     put:
@@ -302,21 +403,148 @@ paths:
       security:
         - bearerAuth: []
 
+  /api/v1/sessions/{id}/answer:
+    put:
+      tags: [sessions]
+      summary: Save one answer (student)
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: "Answer saved" }
+
+  /api/v1/sessions/{id}/submit:
+    put:
+      tags: [sessions]
+      summary: Finish the exam and auto-grade objective questions
+      description: |
+        Manual types (essay/matching) score 0 until the teacher grades them.
+        A submission beyond `duration + 60s` is logged as a `time_exceeded`
+        proctoring event and `time_spent` is clamped to the exam duration.
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: "{ result_id, time_exceeded }" }
+
+  /api/v1/sessions/{id}/result:
+    get:
+      tags: [sessions]
+      summary: Result detail for a session (correct answers hidden from students)
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: Result detail with per-question review }
+
+  /api/v1/sessions/{id}/proctoring-events:
+    post:
+      tags: [sessions]
+      summary: Log an integrity event (student)
+      security:
+        - bearerAuth: []
+      responses:
+        "201": { description: "{ ok: true }" }
+    get:
+      tags: [sessions]
+      summary: List integrity events (owner student, or the teacher who owns the exam)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: "{ events: [{ id, event_type, detail, created_at }], count }"
+
   /api/v1/results:
+    parameters:
+      - $ref: "#/components/parameters/Limit"
+      - $ref: "#/components/parameters/Offset"
     get:
       tags: [results]
-      summary: List results
+      summary: List results (students see only their own; teachers only their exams)
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: "{ results: [...], count } (count = jumlah baris yang dikembalikan)" }
+
+  /api/v1/results/exam/{examId}:
+    get:
+      tags: [results]
+      summary: Results of one exam (students are restricted to their own rows)
       security:
         - bearerAuth: []
 
+  /api/v1/results/student/{studentId}:
+    get:
+      tags: [results]
+      summary: Results of one student
+      security:
+        - bearerAuth: []
+
+  /api/v1/results/{id}:
+    get:
+      tags: [results]
+      summary: Result detail with per-question review
+      security:
+        - bearerAuth: []
+    delete:
+      tags: [results]
+      summary: Delete a result (teacher/admin) — the student may retake the exam
+      security:
+        - bearerAuth: []
+
+  /api/v1/results/{id}/grade:
+    put:
+      tags: [results]
+      summary: Manual grading — override points and add feedback
+      description: |
+        Body `{ "points": { questionId: number }, "feedback": { questionId: string } }`.
+        Backend recomputes `score`/`passed` from the stored review points.
+        Response: `{ message, score, passed }` (not the full result).
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: "{ message, score, passed }" }
+
   /api/v1/users:
+    parameters:
+      - $ref: "#/components/parameters/Limit"
+      - $ref: "#/components/parameters/Offset"
+      - $ref: "#/components/parameters/Search"
     get:
       tags: [users]
       summary: List users (admin)
       security:
         - bearerAuth: []
+      responses:
+        "200": { description: "{ users: [...], count }" }
+
+  /api/v1/users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [users]
+      summary: Get one user (admin)
+      security:
+        - bearerAuth: []
+    put:
+      tags: [users]
+      summary: Update a user's name/email/role (admin)
+      security:
+        - bearerAuth: []
+    delete:
+      tags: [users]
+      summary: Delete a user (admin)
+      security:
+        - bearerAuth: []
+      responses:
+        "204": { description: Deleted }
+        "404": { description: User not found }
 
   /api/v1/teacher/students:
+    parameters:
+      - $ref: "#/components/parameters/Limit"
+      - $ref: "#/components/parameters/Offset"
+      - $ref: "#/components/parameters/Search"
     get:
       tags: [teacher-students]
       summary: List students (teacher only)
@@ -364,7 +592,16 @@ paths:
     post:
       tags: [parser]
       summary: Parse questions from text and/or images (AI vision when images sent)
-      description: Requires GEMINI_API_KEY or ZAI_API_KEY for multimodal parsing. Plain text fallback without key.
+      description: |
+        Requires GEMINI_API_KEY or ZAI_API_KEY for multimodal parsing.
+        Without a working key (or when the model errors) the rule-based text parser is
+        used instead and the reason is reported in `warnings[]`.
+
+        The response detects exam sections ("Bagian A", "I. Pilihan Ganda", "Uraian", …):
+        every question carries `part` (section title) and `part_instruction`, and the
+        response also lists `parts[]`. It also understands the Markdown authoring format
+        (`**[PG-001]**` / `A.` options / `- Kunci:` / `- Pembahasan:`) and Indonesian
+        answer keywords (`Kunci`, `Jawaban`), mapping true/false keys to `true`/`false`.
       security:
         - bearerAuth: []
       requestBody:
@@ -384,11 +621,87 @@ paths:
               required: []
       responses:
         '200':
-          description: ParseResult JSON (success true/false, questions, errors)
+          description: ParseResult JSON (success true/false, questions, parts, errors, warnings)
           content:
             application/json:
               schema:
-                type: object
+                $ref: "#/components/schemas/ParseResult"
+
+  /api/v1/question-banks:
+    parameters:
+      - $ref: "#/components/parameters/Limit"
+      - $ref: "#/components/parameters/Offset"
+    get:
+      tags: [question-banks]
+      summary: List question banks (teacher/admin)
+      security:
+        - bearerAuth: []
+    post:
+      tags: [question-banks]
+      summary: Create a question bank
+      security:
+        - bearerAuth: []
+      responses:
+        "201": { description: Created }
+
+  /api/v1/question-banks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [question-banks]
+      summary: Bank detail with its questions
+      security:
+        - bearerAuth: []
+    put:
+      tags: [question-banks]
+      summary: Update a bank (partial — omitted fields keep their value)
+      security:
+        - bearerAuth: []
+    delete:
+      tags: [question-banks]
+      summary: Delete a bank
+      security:
+        - bearerAuth: []
+      responses:
+        "204": { description: Deleted }
+        "404": { description: Not found }
+
+  /api/v1/question-banks/{id}/questions:
+    post:
+      tags: [question-banks]
+      summary: Add a question to a bank
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: "{ message: 'Added' }" }
+        "404": { description: Bank or question not found }
+
+  /api/v1/question-banks/{id}/questions/{questionId}:
+    delete:
+      tags: [question-banks]
+      summary: Remove a question from a bank
+      security:
+        - bearerAuth: []
+      responses:
+        "204": { description: Removed }
+        "404": { description: Link not found }
+
+  /api/v1/public/media/proxy:
+    get:
+      tags: [media]
+      summary: Proxy an allow-listed HTTPS image (no auth — for <img> tags)
+      parameters:
+        - name: url
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Image bytes with Cache-Control }
+        "400": { description: Only https is allowed }
+        "403": { description: Host not allow-listed }
 
   /api/v1/dashboard/teacher/{id}:
     get:
@@ -412,6 +725,26 @@ components:
       bearerFormat: JWT
 
   parameters:
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: |
+        Jumlah baris per halaman (maks 500). Kosong = tanpa batas (perilaku lama).
+        Nilai tidak valid (mis. "abc" atau negatif) dibalas 400.
+      schema: { type: integer, minimum: 0, maximum: 500 }
+    Offset:
+      name: offset
+      in: query
+      required: false
+      description: Jumlah baris yang dilewati (0 = halaman pertama).
+      schema: { type: integer, minimum: 0 }
+    Search:
+      name: search
+      in: query
+      required: false
+      description: Pencarian teks bebas (ILIKE).
+      schema: { type: string }
     QuestionId:
       name: id
       in: path
@@ -421,6 +754,94 @@ components:
         format: uuid
 
   schemas:
+    ListEnvelope:
+      type: object
+      description: |
+        Semua endpoint list memakai amplop yang sama:
+        `count` = jumlah baris pada respons ini, `total` = jumlah seluruh baris yang
+        cocok dengan filter, `has_more` = masih ada halaman berikutnya.
+      properties:
+        count: { type: integer, description: Jumlah baris pada respons ini }
+        total: { type: integer, description: Total baris yang cocok dengan filter }
+        limit: { type: integer, description: 0 = tanpa batas }
+        offset: { type: integer }
+        has_more: { type: boolean }
+
+    ExamPartInput:
+      type: object
+      description: A section of the exam ("Bagian A — Pilihan Ganda").
+      properties:
+        title: { type: string, description: Section title. Empty + only one part = exam without sections }
+        description: { type: string, description: Instruction line shown above the section }
+        question_ids:
+          type: array
+          items: { type: string, format: uuid }
+        points_per_question:
+          type: integer
+          description: "> 0 overrides the bank points for every question in this part"
+      required: [question_ids]
+
+    ExamCreate:
+      type: object
+      properties:
+        title: { type: string }
+        description: { type: string }
+        subject: { type: string }
+        grade: { type: string }
+        config: { type: object, description: ExamConfig (duration, shuffle_*, show_results, max_attempts, passing_score, security_*) }
+        question_ids:
+          type: array
+          items: { type: string, format: uuid }
+        parts:
+          type: array
+          items: { $ref: "#/components/schemas/ExamPartInput" }
+        scheduled_start: { type: string, format: date-time }
+        scheduled_end: { type: string, format: date-time }
+      required: [title, subject, grade]
+
+    ParsedQuestion:
+      type: object
+      properties:
+        type: { type: string, enum: [multiple-choice, true-false, short-answer, essay, matching, fill-blank] }
+        title: { type: string }
+        content: { type: string }
+        options:
+          type: array
+          items: { type: string }
+        image_urls:
+          type: array
+          items: { type: string }
+        correct_answer: { type: string, description: For true-false this is always "true" or "false" }
+        explanation: { type: string }
+        difficulty: { type: string, enum: [easy, medium, hard] }
+        points: { type: integer }
+        tags:
+          type: array
+          items: { type: string }
+        part: { type: string, description: Section title detected in the source }
+        part_instruction: { type: string }
+
+    ParseResult:
+      type: object
+      properties:
+        success: { type: boolean }
+        questions:
+          type: array
+          items: { $ref: "#/components/schemas/ParsedQuestion" }
+        parts:
+          type: array
+          items:
+            type: object
+            properties:
+              title: { type: string }
+              instruction: { type: string }
+        errors:
+          type: array
+          items: { type: string }
+        warnings:
+          type: array
+          items: { type: string }
+
     User:
       type: object
       properties:

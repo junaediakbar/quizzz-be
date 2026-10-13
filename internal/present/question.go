@@ -16,15 +16,15 @@ func QuestionForStudentJSON(q *models.Question, examPoints int) map[string]inter
 		pts = q.Points
 	}
 	m := map[string]interface{}{
-		"id":          q.ID,
-		"type":        q.Type,
-		"title":       q.Title,
-		"content":     q.Content,
-		"difficulty":  q.Difficulty,
-		"points":      pts,
-		"created_by":  q.CreatedBy,
-		"created_at":  q.CreatedAt,
-		"updated_at":  q.UpdatedAt,
+		"id":         q.ID,
+		"type":       q.Type,
+		"title":      q.Title,
+		"content":    q.Content,
+		"difficulty": q.Difficulty,
+		"points":     pts,
+		"created_by": q.CreatedBy,
+		"created_at": q.CreatedAt,
+		"updated_at": q.UpdatedAt,
 	}
 	if len(opts) > 0 {
 		m["options"] = opts

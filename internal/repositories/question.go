@@ -109,54 +109,72 @@ func (r *QuestionRepository) FindByID(id string) (*models.Question, error) {
 	return question, nil
 }
 
-// List retrieves questions with optional filters
-func (r *QuestionRepository) List(filters QuestionFilters) ([]*models.Question, error) {
-	query := `
-		SELECT id, type, title, content, options, correct_answer, explanation, difficulty, points, tags, category_id, image_urls, created_by, created_at, updated_at
-		FROM questions WHERE 1=1
-	`
+// buildQuestionWhere menyusun klausa WHERE + argumen dari filter (dipakai List dan Count
+// supaya total selalu cocok dengan daftar yang dikembalikan).
+func buildQuestionWhere(filters QuestionFilters) (string, []interface{}) {
+	where := ""
 	args := []interface{}{}
 	argCount := 1
 
 	if filters.Type != "" {
-		query += fmt.Sprintf(" AND type = $%d", argCount)
+		where += fmt.Sprintf(" AND type = $%d", argCount)
 		args = append(args, filters.Type)
 		argCount++
 	}
 
 	if filters.Difficulty != "" {
-		query += fmt.Sprintf(" AND difficulty = $%d", argCount)
+		where += fmt.Sprintf(" AND difficulty = $%d", argCount)
 		args = append(args, filters.Difficulty)
 		argCount++
 	}
 
 	if filters.CategoryID != "" {
-		query += fmt.Sprintf(" AND category_id = $%d", argCount)
+		where += fmt.Sprintf(" AND category_id = $%d", argCount)
 		args = append(args, filters.CategoryID)
 		argCount++
 	}
 
 	if filters.CreatedBy != "" {
-		query += fmt.Sprintf(" AND created_by = $%d", argCount)
+		where += fmt.Sprintf(" AND created_by = $%d", argCount)
 		args = append(args, filters.CreatedBy)
 		argCount++
 	}
 
 	if filters.Search != "" {
-		query += fmt.Sprintf(" AND (title ILIKE $%d OR content ILIKE $%d)", argCount, argCount+1)
+		where += fmt.Sprintf(" AND (title ILIKE $%d OR content ILIKE $%d)", argCount, argCount+1)
 		searchPattern := "%" + filters.Search + "%"
 		args = append(args, searchPattern, searchPattern)
 		argCount += 2
 	}
 
-	query += " ORDER BY created_at DESC"
+	return where, args
+}
 
+// Count mengembalikan jumlah soal yang cocok dengan filter (mengabaikan Limit/Offset).
+func (r *QuestionRepository) Count(filters QuestionFilters) (int, error) {
+	where, args := buildQuestionWhere(filters)
+	var total int
+	if err := r.db.QueryRow("SELECT COUNT(*) FROM questions WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("failed to count questions: %w", err)
+	}
+	return total, nil
+}
+
+// List retrieves questions with optional filters
+func (r *QuestionRepository) List(filters QuestionFilters) ([]*models.Question, error) {
+	where, args := buildQuestionWhere(filters)
+	query := `
+		SELECT id, type, title, content, options, correct_answer, explanation, difficulty, points, tags, category_id, image_urls, created_by, created_at, updated_at
+		FROM questions WHERE 1=1` + where
+
+	query += " ORDER BY created_at DESC, id DESC"
+
+	argCount := len(args) + 1
 	if filters.Limit > 0 {
 		query += fmt.Sprintf(" LIMIT $%d", argCount)
 		args = append(args, filters.Limit)
 		argCount++
 	}
-
 	if filters.Offset > 0 {
 		query += fmt.Sprintf(" OFFSET $%d", argCount)
 		args = append(args, filters.Offset)
@@ -250,9 +268,12 @@ func (r *QuestionRepository) Update(question *models.Question) error {
 // Delete deletes a question by ID
 func (r *QuestionRepository) Delete(id string) error {
 	query := `DELETE FROM questions WHERE id = $1`
-	_, err := r.db.Exec(query, id)
+	res, err := r.db.Exec(query, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete question: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrQuestionNotFound
 	}
 	return nil
 }
@@ -266,13 +287,13 @@ func (r *QuestionRepository) CountByCreator(createdBy string) (int, error) {
 
 // QuestionFilters represents filters for listing questions
 type QuestionFilters struct {
-	Type       string
-	Difficulty string
-	CategoryID string
-	CreatedBy  string
-	Search     string
-	Limit      int
-	Offset     int
+	Type           string
+	Difficulty     string
+	CategoryID     string
+	CreatedBy      string
+	Search         string
+	Limit          int
+	Offset         int
 	MissingOptions bool // Find MCQ questions without options
 }
 

@@ -18,13 +18,13 @@ import (
 )
 
 type SessionHandler struct {
-	db              *sql.DB
-	examRepo        *repositories.ExamRepository
-	questionRepo    *repositories.QuestionRepository
-	sessionRepo     *repositories.SessionRepository
-	resultRepo      *repositories.ResultRepository
-	userRepo        *repositories.UserRepository
-	proctoringRepo  *repositories.ProctoringRepository
+	db             *sql.DB
+	examRepo       *repositories.ExamRepository
+	questionRepo   *repositories.QuestionRepository
+	sessionRepo    *repositories.SessionRepository
+	resultRepo     *repositories.ResultRepository
+	userRepo       *repositories.UserRepository
+	proctoringRepo *repositories.ProctoringRepository
 }
 
 func NewSessionHandler(db *sql.DB) *SessionHandler {
@@ -59,6 +59,9 @@ func (h *SessionHandler) StartSession(c *fiber.Ctx) error {
 	if err := c.BodyParser(&body); err != nil || body.ExamID == "" {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "exam_id is required"})
 	}
+	if !validUUID(body.ExamID) {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "Invalid exam_id: harus berupa UUID"})
+	}
 
 	exam, err := h.examRepo.FindByID(body.ExamID)
 	if err != nil {
@@ -86,10 +89,22 @@ func (h *SessionHandler) StartSession(c *fiber.Ctx) error {
 		})
 	}
 
+	examParts, err := h.examRepo.GetExamParts(body.ExamID)
+	if err != nil {
+		log.Printf("StartSession GetExamParts: %v", err)
+		examParts = nil
+	}
+	hasParts := len(examParts) > 0
+
 	if exam.Config.ShuffleQuestions {
-		rand.Shuffle(len(links), func(i, j int) {
-			links[i], links[j] = links[j], links[i]
-		})
+		if hasParts {
+			// Keep sections intact: shuffle the questions inside each part only.
+			links = shuffleWithinParts(links, examParts)
+		} else {
+			rand.Shuffle(len(links), func(i, j int) {
+				links[i], links[j] = links[j], links[i]
+			})
+		}
 	}
 
 	existing, err := h.sessionRepo.FindByExamAndStudent(body.ExamID, studentID)
@@ -97,10 +112,9 @@ func (h *SessionHandler) StartSession(c *fiber.Ctx) error {
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load session"})
 	}
 	maxAttempts := exam.Config.MaxAttempts
-	if maxAttempts <= 0 {
-		maxAttempts = 1
-	}
-	if err == nil && existing.Status == "submitted" {
+	// 0 / negatif = unlimited (lihat UI "Unlimited" di exam wizard).
+	unlimitedAttempts := maxAttempts <= 0
+	if err == nil && existing.Status == "submitted" && !unlimitedAttempts {
 		attemptsUsed, cntErr := h.sessionRepo.CountAttempts(body.ExamID, studentID)
 		if cntErr != nil {
 			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load session"})
@@ -174,16 +188,86 @@ func (h *SessionHandler) StartSession(c *fiber.Ctx) error {
 		startedAt = time.Now()
 	}
 
+	usedParts := partsInUse(examParts, links)
+
 	return c.JSON(fiber.Map{
-		"session_id": session.ID,
-		"exam_id":    exam.ID,
-		"exam_title": exam.Title,
-		"questions":  questions,
-		"duration":   exam.Config.Duration,
-		"started_at": startedAt,
-		"answers":    answersMap,
-		"security":   exam.Config.SecurityPayload(),
+		"session_id":     session.ID,
+		"exam_id":        exam.ID,
+		"exam_title":     exam.Title,
+		"questions":      questions,
+		"duration":       exam.Config.Duration,
+		"started_at":     startedAt,
+		"answers":        answersMap,
+		"security":       exam.Config.SecurityPayload(),
+		"parts":          usedParts,
+		"attempt_number": session.AttemptNumber,
 	})
+}
+
+// partsInUse returns only the sections that really contain questions, in order.
+func partsInUse(parts []models.ExamPart, links []repositories.ExamQuestionLink) []map[string]interface{} {
+	if len(parts) == 0 {
+		return nil
+	}
+	counts := map[string]int{}
+	for _, l := range links {
+		if l.PartID != "" {
+			counts[l.PartID]++
+		}
+	}
+	out := make([]map[string]interface{}, 0, len(parts))
+	for _, p := range parts {
+		if counts[p.ID] == 0 {
+			continue
+		}
+		item := map[string]interface{}{
+			"id":             p.ID,
+			"title":          p.Title,
+			"order_index":    p.OrderIndex,
+			"question_count": counts[p.ID],
+		}
+		if p.Description != nil && *p.Description != "" {
+			item["description"] = *p.Description
+		}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// shuffleWithinParts shuffles questions inside each section while keeping the
+// section order, so "Bagian A" always comes before "Bagian B".
+func shuffleWithinParts(links []repositories.ExamQuestionLink, parts []models.ExamPart) []repositories.ExamQuestionLink {
+	grouped := map[string][]repositories.ExamQuestionLink{}
+	var orphans []repositories.ExamQuestionLink
+	for _, l := range links {
+		if l.PartID == "" {
+			orphans = append(orphans, l)
+			continue
+		}
+		grouped[l.PartID] = append(grouped[l.PartID], l)
+	}
+
+	out := make([]repositories.ExamQuestionLink, 0, len(links))
+	for _, p := range parts {
+		bucket := grouped[p.ID]
+		delete(grouped, p.ID)
+		if len(bucket) > 1 {
+			rand.Shuffle(len(bucket), func(i, j int) { bucket[i], bucket[j] = bucket[j], bucket[i] })
+		}
+		out = append(out, bucket...)
+	}
+	// Parts created after this list was read (or unknown IDs) keep their order.
+	for _, l := range links {
+		if bucket, ok := grouped[l.PartID]; ok {
+			out = append(out, bucket...)
+			delete(grouped, l.PartID)
+		}
+	}
+	out = append(out, orphans...)
+	return out
 }
 
 func (h *SessionHandler) buildStudentQuestions(exam *models.Exam, links []repositories.ExamQuestionLink) ([]map[string]interface{}, error) {
@@ -202,15 +286,15 @@ func (h *SessionHandler) buildStudentQuestions(exam *models.Exam, links []reposi
 		}
 		// Build student question JSON with shuffled options
 		studentQ := map[string]interface{}{
-			"id":          q.ID,
-			"type":        q.Type,
-			"title":       q.Title,
-			"content":     q.Content,
-			"difficulty":  q.Difficulty,
-			"points":      link.Points,
-			"created_by":  q.CreatedBy,
-			"created_at":  q.CreatedAt,
-			"updated_at":  q.UpdatedAt,
+			"id":         q.ID,
+			"type":       q.Type,
+			"title":      q.Title,
+			"content":    q.Content,
+			"difficulty": q.Difficulty,
+			"points":     link.Points,
+			"created_by": q.CreatedBy,
+			"created_at": q.CreatedAt,
+			"updated_at": q.UpdatedAt,
 		}
 		// Add options as array (not string)
 		if len(opts) > 0 {
@@ -225,6 +309,9 @@ func (h *SessionHandler) buildStudentQuestions(exam *models.Exam, links []reposi
 		if q.CategoryID != nil {
 			studentQ["category_id"] = *q.CategoryID
 		}
+		if link.PartID != "" {
+			studentQ["part_id"] = link.PartID
+		}
 		questions = append(questions, studentQ)
 	}
 
@@ -234,6 +321,9 @@ func (h *SessionHandler) buildStudentQuestions(exam *models.Exam, links []reposi
 // GetSession GET /sessions/:id
 func (h *SessionHandler) GetSession(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	userID := c.Locals("user_id").(string)
 	role := c.Locals("user_role").(string)
 
@@ -247,6 +337,12 @@ func (h *SessionHandler) GetSession(c *fiber.Ctx) error {
 
 	if role == "student" && s.StudentID != userID {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "Forbidden"})
+	}
+	// Guru hanya boleh membaca sesi ujian yang dia buat sendiri.
+	if role == "teacher" {
+		if ex, exErr := h.examRepo.FindByID(s.ExamID); exErr != nil || ex.CreatedBy != userID {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "Forbidden"})
+		}
 	}
 
 	var answers map[string]string
@@ -275,7 +371,9 @@ func (h *SessionHandler) SubmitAnswer(c *fiber.Ctx) error {
 	}
 	studentID := c.Locals("user_id").(string)
 	id := c.Params("id")
-
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	var body submitAnswerBody
 	if err := c.BodyParser(&body); err != nil || body.QuestionID == "" {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "question_id and answer are required"})
@@ -316,7 +414,9 @@ func (h *SessionHandler) SubmitExam(c *fiber.Ctx) error {
 	}
 	studentID := c.Locals("user_id").(string)
 	id := c.Params("id")
-
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	s, err := h.sessionRepo.FindByID(id)
 	if err != nil {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Session not found"})
@@ -361,6 +461,21 @@ func (h *SessionHandler) SubmitExam(c *fiber.Ctx) error {
 		secs := int(now.Sub(*s.StartedAt).Seconds())
 		if secs > 0 {
 			timeSpent = secs
+		}
+	}
+
+	// Integritas: durasi ujian ditegakkan di server. Kalau murid mengirim
+	// jawaban jauh melewati batas (mis. timer klien tidak sempat submit karena
+	// koneksi putus), catat pelanggaran dan simpan waktu sesuai durasi ujian.
+	timeExceeded := false
+	allowedSeconds := exam.Config.Duration * 60
+	if allowedSeconds > 0 && timeSpent > allowedSeconds+60 {
+		over := timeSpent - allowedSeconds
+		timeSpent = allowedSeconds
+		timeExceeded = true
+		detail, _ := json.Marshal(map[string]int{"over_seconds": over, "allowed_seconds": allowedSeconds})
+		if logErr := h.proctoringRepo.LogEvent(s.ID, "time_exceeded", detail); logErr != nil {
+			log.Printf("SubmitExam LogEvent(time_exceeded): %v", logErr)
 		}
 	}
 
@@ -442,7 +557,7 @@ func (h *SessionHandler) SubmitExam(c *fiber.Ctx) error {
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Commit failed"})
 	}
 
-	return c.JSON(fiber.Map{"result_id": resultID})
+	return c.JSON(fiber.Map{"result_id": resultID, "time_exceeded": timeExceeded})
 }
 
 // GetSessionResult GET /sessions/:id/result
@@ -450,13 +565,21 @@ func (h *SessionHandler) GetSessionResult(c *fiber.Ctx) error {
 	userID := c.Locals("user_id").(string)
 	role := c.Locals("user_role").(string)
 	id := c.Params("id")
-
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	s, err := h.sessionRepo.FindByID(id)
 	if err != nil {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Session not found"})
 	}
 	if role == "student" && s.StudentID != userID {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "Forbidden"})
+	}
+	// Guru hanya boleh melihat hasil sesi ujian miliknya.
+	if role == "teacher" {
+		if ex, exErr := h.examRepo.FindByID(s.ExamID); exErr != nil || ex.CreatedBy != userID {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "Forbidden"})
+		}
 	}
 
 	res, err := h.resultRepo.FindBySessionID(s.ID)
@@ -483,6 +606,36 @@ type proctoringEventBody struct {
 	Detail    json.RawMessage `json:"detail"`
 }
 
+// ListProctoringEvents GET /sessions/:id/proctoring-events — guru pemilik ujian
+// (atau murid yang bersangkutan) dapat melihat pelanggaran yang tercatat.
+func (h *SessionHandler) ListProctoringEvents(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
+	userID := c.Locals("user_id").(string)
+	role := c.Locals("user_role").(string)
+
+	s, err := h.sessionRepo.FindByID(id)
+	if err != nil {
+		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Session not found"})
+	}
+	if role == "student" && s.StudentID != userID {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "Forbidden"})
+	}
+	if role == "teacher" {
+		if ex, exErr := h.examRepo.FindByID(s.ExamID); exErr != nil || ex.CreatedBy != userID {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "Forbidden"})
+		}
+	}
+
+	events, err := h.proctoringRepo.ListEvents(s.ID)
+	if err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load events"})
+	}
+	return c.JSON(fiber.Map{"events": events, "count": len(events)})
+}
+
 // LogProctoringEvent POST /sessions/:id/proctoring-events
 func (h *SessionHandler) LogProctoringEvent(c *fiber.Ctx) error {
 	if c.Locals("user_role") != "student" {
@@ -490,6 +643,9 @@ func (h *SessionHandler) LogProctoringEvent(c *fiber.Ctx) error {
 	}
 	studentID := c.Locals("user_id").(string)
 	id := c.Params("id")
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	if id == "" {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "Session id required"})
 	}

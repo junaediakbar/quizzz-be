@@ -47,5 +47,6 @@ temp/
 
 update.sh
 
-quizapp
-./quizapp
+quizapp*
+
+*.log

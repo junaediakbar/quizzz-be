@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/junaediakbar/quizzz-backend/internal/present"
@@ -26,12 +27,21 @@ func NewResultHandler(db *sql.DB) *ResultHandler {
 	}
 }
 
-// ListResults GET /results
+// ListResults GET /results?exam_id=&limit=&offset=
 func (h *ResultHandler) ListResults(c *fiber.Ctx) error {
+	page, err := ParsePageParams(c)
+	if err != nil {
+		return PageError(c, err)
+	}
+
 	role := c.Locals("user_role").(string)
 	userID := c.Locals("user_id").(string)
 
-	f := repositories.ResultListFilters{}
+	f := repositories.ResultListFilters{
+		Limit:  page.Limit,
+		Offset: page.Offset,
+		Search: strings.TrimSpace(c.Query("search", "")),
+	}
 	switch role {
 	case "student":
 		f.StudentID = userID
@@ -40,6 +50,13 @@ func (h *ResultHandler) ListResults(c *fiber.Ctx) error {
 	}
 	if examID := c.Query("exam_id"); examID != "" {
 		f.ExamID = examID
+	}
+	if raw := strings.TrimSpace(c.Query("passed")); raw != "" {
+		passed := raw == "true" || raw == "1"
+		if raw != "true" && raw != "false" && raw != "1" && raw != "0" {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "passed harus true atau false"})
+		}
+		f.Passed = &passed
 	}
 
 	list, err := h.resultRepo.ListWithExamTitle(f)
@@ -51,12 +68,22 @@ func (h *ResultHandler) ListResults(c *fiber.Ctx) error {
 	for _, row := range list {
 		items = append(items, present.EnrichResultListItem(&row.Result))
 	}
-	return c.JSON(fiber.Map{"results": items, "count": len(items)})
+
+	total, err := h.resultRepo.CountResults(f)
+	if err != nil {
+		total = page.Offset + len(items)
+	}
+
+	body := fiber.Map{"results": items}
+	return c.JSON(NewListMeta(len(items), total, page).Apply(body))
 }
 
 // GetResult GET /results/:id
 func (h *ResultHandler) GetResult(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	role := c.Locals("user_role").(string)
 	userID := c.Locals("user_id").(string)
 
@@ -101,7 +128,9 @@ func (h *ResultHandler) GradeResult(c *fiber.Ctx) error {
 	}
 	teacherID := c.Locals("user_id").(string)
 	id := c.Params("id")
-
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	res, err := h.resultRepo.FindByID(id)
 	if err != nil {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Result not found"})
@@ -158,7 +187,7 @@ func (h *ResultHandler) GradeResult(c *fiber.Ctx) error {
 	maxScore := res.MaxScore
 	passed := false
 	if maxScore > 0 {
-		passed = (total*100/maxScore) >= examMeta.Config.PassingScore
+		passed = (total * 100 / maxScore) >= examMeta.Config.PassingScore
 	}
 
 	if err := h.resultRepo.UpdateResultScore(tx, res.ID, total, passed); err != nil {
@@ -175,6 +204,9 @@ func (h *ResultHandler) GradeResult(c *fiber.Ctx) error {
 // GetResultsByExam GET /results/exam/:examId
 func (h *ResultHandler) GetResultsByExam(c *fiber.Ctx) error {
 	examID := c.Params("examId")
+	if rejectInvalidUUID(c, "examId", examID) {
+		return nil
+	}
 	role := c.Locals("user_role").(string)
 	userID := c.Locals("user_id").(string)
 
@@ -185,8 +217,18 @@ func (h *ResultHandler) GetResultsByExam(c *fiber.Ctx) error {
 	if role == "teacher" && ex.CreatedBy != userID {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "Forbidden"})
 	}
+	page, err := ParsePageParams(c)
+	if err != nil {
+		return PageError(c, err)
+	}
 
-	list, err := h.resultRepo.ListWithExamTitle(repositories.ResultListFilters{ExamID: examID})
+	// Murid tidak boleh melihat nilai teman sekelasnya — batasi ke hasilnya sendiri.
+	filters := repositories.ResultListFilters{ExamID: examID, Limit: page.Limit, Offset: page.Offset}
+	if role == "student" {
+		filters.StudentID = userID
+	}
+
+	list, err := h.resultRepo.ListWithExamTitle(filters)
 	if err != nil {
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list"})
 	}
@@ -194,12 +236,22 @@ func (h *ResultHandler) GetResultsByExam(c *fiber.Ctx) error {
 	for _, row := range list {
 		items = append(items, present.EnrichResultListItem(&row.Result))
 	}
-	return c.JSON(fiber.Map{"results": items, "count": len(items)})
+
+	total, err := h.resultRepo.CountResults(filters)
+	if err != nil {
+		total = page.Offset + len(items)
+	}
+
+	body := fiber.Map{"results": items}
+	return c.JSON(NewListMeta(len(items), total, page).Apply(body))
 }
 
 // GetResultsByStudent GET /results/student/:studentId
 func (h *ResultHandler) GetResultsByStudent(c *fiber.Ctx) error {
 	studentID := c.Params("studentId")
+	if rejectInvalidUUID(c, "studentId", studentID) {
+		return nil
+	}
 	role := c.Locals("user_role").(string)
 	userID := c.Locals("user_id").(string)
 
@@ -207,7 +259,16 @@ func (h *ResultHandler) GetResultsByStudent(c *fiber.Ctx) error {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "Forbidden"})
 	}
 
-	f := repositories.ResultListFilters{StudentID: studentID}
+	page, err := ParsePageParams(c)
+	if err != nil {
+		return PageError(c, err)
+	}
+
+	f := repositories.ResultListFilters{
+		StudentID: studentID,
+		Limit:     page.Limit,
+		Offset:    page.Offset,
+	}
 	if role == "teacher" {
 		f.TeacherID = userID
 	}
@@ -220,7 +281,14 @@ func (h *ResultHandler) GetResultsByStudent(c *fiber.Ctx) error {
 	for _, row := range list {
 		items = append(items, present.EnrichResultListItem(&row.Result))
 	}
-	return c.JSON(fiber.Map{"results": items, "count": len(items)})
+
+	total, err := h.resultRepo.CountResults(f)
+	if err != nil {
+		total = page.Offset + len(items)
+	}
+
+	body := fiber.Map{"results": items}
+	return c.JSON(NewListMeta(len(items), total, page).Apply(body))
 }
 
 // DeleteResult DELETE /results/:id — teacher/admin removes a submission so the student can retake.
@@ -231,6 +299,9 @@ func (h *ResultHandler) DeleteResult(c *fiber.Ctx) error {
 	}
 	userID := c.Locals("user_id").(string)
 	id := c.Params("id")
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	if id == "" {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "Result ID is required"})
 	}

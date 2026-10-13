@@ -81,6 +81,19 @@ func (r *UserRepository) Update(user *models.User) error {
 	return nil
 }
 
+// UpdatePassword updates only a user's password hash
+func (r *UserRepository) UpdatePassword(id string, passwordHash string) error {
+	query := `
+		UPDATE users SET password_hash = $2
+		WHERE id = $1
+	`
+	_, err := r.db.Exec(query, id, passwordHash)
+	if err != nil {
+		return fmt.Errorf("failed to update password: %w", err)
+	}
+	return nil
+}
+
 // AdminUpdate updates name, email, role, and avatar (admin).
 func (r *UserRepository) AdminUpdate(user *models.User) error {
 	query := `
@@ -105,23 +118,70 @@ func (r *UserRepository) CountByRole(role string) (int, error) {
 // Delete deletes a user by ID
 func (r *UserRepository) Delete(id string) error {
 	query := `DELETE FROM users WHERE id = $1`
-	_, err := r.db.Exec(query, id)
+	res, err := r.db.Exec(query, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete user: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrUserNotFound
 	}
 	return nil
 }
 
 // List retrieves all users with optional role filter
-func (r *UserRepository) List(role string) ([]*models.User, error) {
+// UserFilters menyaring daftar pengguna (admin).
+type UserFilters struct {
+	Role   string
+	Search string // ILIKE pada name/email
+	Limit  int
+	Offset int
+}
+
+func buildUserWhere(filters UserFilters) (string, []interface{}) {
+	where := ""
+	args := []interface{}{}
+	argN := 1
+	if filters.Role != "" {
+		where += fmt.Sprintf(" AND role = $%d", argN)
+		args = append(args, filters.Role)
+		argN++
+	}
+	if filters.Search != "" {
+		where += fmt.Sprintf(" AND (name ILIKE $%d OR email ILIKE $%d)", argN, argN+1)
+		pattern := "%" + filters.Search + "%"
+		args = append(args, pattern, pattern)
+		argN += 2
+	}
+	return where, args
+}
+
+// CountUsers mengembalikan jumlah pengguna yang cocok dengan filter.
+func (r *UserRepository) CountUsers(filters UserFilters) (int, error) {
+	where, args := buildUserWhere(filters)
+	var total int
+	if err := r.db.QueryRow("SELECT COUNT(*) FROM users WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("failed to count users: %w", err)
+	}
+	return total, nil
+}
+
+// List mengambil pengguna dengan filter + pagination.
+func (r *UserRepository) List(filters UserFilters) ([]*models.User, error) {
+	where, args := buildUserWhere(filters)
 	query := `
 		SELECT id, name, email, password_hash, role, avatar, created_at, updated_at
 		FROM users
-	`
-	args := []interface{}{}
-	if role != "" {
-		query += " WHERE role = $1"
-		args = append(args, role)
+		WHERE 1=1` + where + ` ORDER BY name ASC, id ASC`
+
+	argN := len(args) + 1
+	if filters.Limit > 0 {
+		query += fmt.Sprintf(" LIMIT $%d", argN)
+		args = append(args, filters.Limit)
+		argN++
+	}
+	if filters.Offset > 0 {
+		query += fmt.Sprintf(" OFFSET $%d", argN)
+		args = append(args, filters.Offset)
 	}
 
 	rows, err := r.db.Query(query, args...)
@@ -147,37 +207,12 @@ func (r *UserRepository) List(role string) ([]*models.User, error) {
 }
 
 // ListStudents returns users with role student, optional ILIKE search on name or email.
-func (r *UserRepository) ListStudents(search string) ([]*models.User, error) {
-	query := `
-		SELECT id, name, email, password_hash, role, avatar, created_at, updated_at
-		FROM users
-		WHERE role = 'student'
-	`
-	args := []interface{}{}
-	if search != "" {
-		query += ` AND (name ILIKE $1 OR email ILIKE $1)`
-		args = append(args, "%"+search+"%")
-	}
-	query += ` ORDER BY name ASC`
+// ListStudents returns users with role student, optional ILIKE search, with pagination.
+func (r *UserRepository) ListStudents(search string, limit, offset int) ([]*models.User, error) {
+	return r.List(UserFilters{Role: "student", Search: search, Limit: limit, Offset: offset})
+}
 
-	rows, err := r.db.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list students: %w", err)
-	}
-	defer rows.Close()
-
-	var users []*models.User
-	for rows.Next() {
-		user := &models.User{}
-		err := rows.Scan(
-			&user.ID, &user.Name, &user.Email, &user.Password, &user.Role,
-			&user.Avatar, &user.CreatedAt, &user.UpdatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan user: %w", err)
-		}
-		users = append(users, user)
-	}
-
-	return users, nil
+// CountStudents mengembalikan jumlah murid yang cocok dengan pencarian.
+func (r *UserRepository) CountStudents(search string) (int, error) {
+	return r.CountUsers(UserFilters{Role: "student", Search: search})
 }

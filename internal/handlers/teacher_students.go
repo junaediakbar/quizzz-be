@@ -26,22 +26,37 @@ func NewTeacherStudentHandler(db *sql.DB) *TeacherStudentHandler {
 	}
 }
 
-// ListStudents GET /teacher/students?search=
+// ListStudents GET /teacher/students?search=&limit=&offset=
 func (h *TeacherStudentHandler) ListStudents(c *fiber.Ctx) error {
+	page, err := ParsePageParams(c)
+	if err != nil {
+		return PageError(c, err)
+	}
+
 	search := strings.TrimSpace(c.Query("search", ""))
-	users, err := h.userRepo.ListStudents(search)
+	users, err := h.userRepo.ListStudents(search, page.Limit, page.Offset)
 	if err != nil {
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list students"})
 	}
 	for _, u := range users {
 		u.Password = ""
 	}
-	return c.JSON(fiber.Map{"students": users, "count": len(users)})
+
+	total, err := h.userRepo.CountStudents(search)
+	if err != nil {
+		total = page.Offset + len(users)
+	}
+
+	body := fiber.Map{"students": users}
+	return c.JSON(NewListMeta(len(users), total, page).Apply(body))
 }
 
 // GetStudent GET /teacher/students/:id
 func (h *TeacherStudentHandler) GetStudent(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	u, err := h.userRepo.FindByID(id)
 	if err != nil {
 		if errors.Is(err, repositories.ErrUserNotFound) {
@@ -65,6 +80,9 @@ type teacherUpdateStudentBody struct {
 // UpdateStudent PUT /teacher/students/:id — name, email, avatar only; target must be student.
 func (h *TeacherStudentHandler) UpdateStudent(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	var body teacherUpdateStudentBody
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "Invalid body"})
@@ -84,14 +102,21 @@ func (h *TeacherStudentHandler) UpdateStudent(c *fiber.Ctx) error {
 	if strings.TrimSpace(body.Name) != "" {
 		u.Name = strings.TrimSpace(body.Name)
 	}
-	if strings.TrimSpace(body.Email) != "" {
-		u.Email = strings.TrimSpace(body.Email)
+	if newEmail := strings.TrimSpace(body.Email); newEmail != "" && !strings.EqualFold(newEmail, u.Email) {
+		// Email unik: kembalikan 409, bukan 500 dari pelanggaran constraint.
+		if existing, ferr := h.userRepo.FindByEmail(newEmail); ferr == nil && existing.ID != u.ID {
+			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "Email already registered"})
+		}
+		u.Email = newEmail
 	}
 	if body.Avatar != nil {
 		u.Avatar = body.Avatar
 	}
 
 	if err := h.userRepo.Update(u); err != nil {
+		if isUniqueViolation(err) {
+			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "Email already registered"})
+		}
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update student"})
 	}
 	u.Password = ""
@@ -159,7 +184,9 @@ func (h *TeacherStudentHandler) CreateStudent(c *fiber.Ctx) error {
 // DeleteStudent DELETE /teacher/students/:id — teachers can delete student accounts.
 func (h *TeacherStudentHandler) DeleteStudent(c *fiber.Ctx) error {
 	id := c.Params("id")
-
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
 	u, err := h.userRepo.FindByID(id)
 	if err != nil {
 		if errors.Is(err, repositories.ErrUserNotFound) {
