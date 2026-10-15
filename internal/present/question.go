@@ -2,6 +2,7 @@ package present
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/junaediakbar/quizzz-backend/models"
@@ -81,6 +82,75 @@ func QuestionFullJSON(q *models.Question) map[string]interface{} {
 		m["explanation"] = *q.Explanation
 	}
 	return m
+}
+
+// StepAnswersSlice parses the JSON array of per-step correct answers
+// (stored in the correct_answer column for "step-by-step" questions).
+func StepAnswersSlice(correct string) []string {
+	s := strings.TrimSpace(correct)
+	if s == "" {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// StepAnswersFromStudent parses a student's step-by-step response
+// (a JSON object mapping step number -> answer, e.g. {"1":"20","2":"45"}).
+// Falls back to treating the raw string as the answer to step 1.
+func StepAnswersFromStudent(student string) map[string]string {
+	s := strings.TrimSpace(student)
+	if strings.HasPrefix(s, "{") {
+		var m map[string]string
+		if err := json.Unmarshal([]byte(s), &m); err == nil {
+			return m
+		}
+	}
+	return nil
+}
+
+// StepAnswerMatches compares one student step to its key (case/whitespace tolerant).
+func StepAnswerMatches(student, correct string) bool {
+	norm := func(v string) string {
+		v = strings.TrimSpace(v)
+		v = strings.Trim(v, "\"'")
+		v = strings.Join(strings.Fields(v), " ")
+		return strings.ToLower(v)
+	}
+	return norm(student) == norm(correct)
+}
+
+// StepByStepGrade grades a step-by-step response.
+// Returns earned points, whether ALL steps are correct, and per-step detail
+// (index, student answer, key, correct?) for feedback.
+func StepByStepGrade(student, correct string, keys []string) (correctSteps int, details []map[string]interface{}) {
+	byKey := StepAnswersFromStudent(student)
+	details = make([]map[string]interface{}, 0, len(keys))
+	for i, key := range keys {
+		stepNum := fmt.Sprintf("%d", i+1)
+		stu := ""
+		if byKey != nil {
+			stu = byKey[stepNum]
+		} else if i == 0 {
+			// legacy/plain answer: treat as step 1
+			stu = student
+		}
+		ok := strings.TrimSpace(stu) != "" && StepAnswerMatches(stu, key)
+		if ok {
+			correctSteps++
+		}
+		details = append(details, map[string]interface{}{
+			"step":     i + 1,
+			"student":  stu,
+			"key":      key,
+			"correct":  ok,
+			"answered": strings.TrimSpace(stu) != "",
+		})
+	}
+	return correctSteps, details
 }
 
 // NormalizeAnswer compares student response to key for auto-grading.

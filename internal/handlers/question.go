@@ -136,14 +136,42 @@ func normalizeQuestionType(t string) string {
 		return "short-answer"
 	case "fillblank", "fill blank", "fill-in-the-blank", "fill_in_the_blank":
 		return "fill-blank"
+	case "stepbystep", "step by step", "step_by_step", "guided-steps", "langkah":
+		return "step-by-step"
 	default:
 		return s
 	}
 }
 
-func isAllowedQuestionType(t string) bool {
-	switch t {
-	case "multiple-choice", "true-false", "short-answer", "essay", "matching", "fill-blank":
+// validateStepByStep ensures a step-by-step question is complete:
+// at least one step instruction, and a JSON-array answer key that
+// matches the number of steps. Returns "" when valid.
+func validateStepByStep(qType string, options []string, correctAnswer string) string {
+	if len(options) < 1 {
+		return "Step-by-step questions must have at least 1 step"
+	}
+	for i, opt := range options {
+		if strings.TrimSpace(opt) == "" {
+			return fmt.Sprintf("Step %d instruction is empty", i+1)
+		}
+	}
+	keys := present.StepAnswersSlice(correctAnswer)
+	if len(keys) == 0 {
+		return "Step-by-step questions need an answer key array (e.g. [\"20\",\"45\",\"35\"])"
+	}
+	for i, k := range keys {
+		if strings.TrimSpace(k) == "" {
+			return fmt.Sprintf("Answer key for step %d is empty", i+1)
+		}
+	}
+	if len(keys) != len(options) {
+		return fmt.Sprintf("Answer key count (%d) must match step count (%d)", len(keys), len(options))
+	}
+	return ""
+}
+
+func isAllowedQuestionType(t string) bool {	switch t {
+	case "multiple-choice", "true-false", "short-answer", "essay", "matching", "fill-blank", "step-by-step":
 		return true
 	default:
 		return false
@@ -296,6 +324,13 @@ func (h *QuestionHandler) CreateQuestion(c *fiber.Ctx) error {
 		})
 	}
 
+	// Validate step-by-step questions have steps and per-step keys
+	if req.Type == "step-by-step" {
+		if msg := validateStepByStep(req.Type, req.Options, req.CorrectAnswer); msg != "" {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": msg})
+		}
+	}
+
 	// Get user ID from context
 	userID := c.Locals("user_id")
 	if userID == nil {
@@ -403,6 +438,13 @@ func (h *QuestionHandler) UpdateQuestion(c *fiber.Ctx) error {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
 			"error": "Multiple choice questions must have at least 2 options",
 		})
+	}
+
+	// Validate step-by-step questions have steps and per-step keys
+	if req.Type == "step-by-step" {
+		if msg := validateStepByStep(req.Type, req.Options, req.CorrectAnswer); msg != "" {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": msg})
+		}
 	}
 
 	// Get existing question
@@ -635,6 +677,13 @@ func (h *QuestionHandler) ImportQuestions(c *fiber.Ctx) error {
 		if req.Type == "multiple-choice" && len(req.Options) < 2 {
 			failed = append(failed, importFailure{Index: i, Error: "multiple choice questions must have at least 2 options"})
 			continue
+		}
+		// Validate step-by-step questions
+		if req.Type == "step-by-step" {
+			if msg := validateStepByStep(req.Type, req.Options, req.CorrectAnswer); msg != "" {
+				failed = append(failed, importFailure{Index: i, Error: msg})
+				continue
+			}
 		}
 		if req.Difficulty == "" {
 			req.Difficulty = "medium"
