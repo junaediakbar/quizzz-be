@@ -16,6 +16,31 @@ func findQ(t *testing.T, res *ParseResult, idx int) ParsedQuestion {
 	return res.Questions[idx]
 }
 
+func TestParseStepByStepMarkerFormat(t *testing.T) {
+	text := `1. Tentukan x dari 3x + 5 = 20.
+Langkah 1: Kurangkan kedua ruas dengan 5 | Kunci: 3x = 15
+Langkah 2: Bagi kedua ruas dengan 3 | Kunci: x = 5`
+
+	res := ParseQuestionsSimple(text)
+	if len(res.Questions) != 1 {
+		t.Fatalf("expected 1 question, got %d: %+v", len(res.Questions), res.Questions)
+	}
+	q := findQ(t, res, 0)
+	if q.Type != "step-by-step" {
+		t.Fatalf("type = %q, want step-by-step", q.Type)
+	}
+	if len(q.Options) != 2 || q.Options[1] != "Bagi kedua ruas dengan 3" {
+		t.Errorf("steps = %+v", q.Options)
+	}
+	var keys []string
+	if err := json.Unmarshal([]byte(q.CorrectAnswer), &keys); err != nil {
+		t.Fatalf("answer key is not a JSON array: %q: %v", q.CorrectAnswer, err)
+	}
+	if len(keys) != 2 || keys[0] != "3x = 15" || keys[1] != "x = 5" {
+		t.Errorf("keys = %+v", keys)
+	}
+}
+
 func TestParseNumberedFormatWithImageMarkers(t *testing.T) {
 	text := `[!above https://cdn.example.com/diagram.png]
 1. 5² dibaca ....

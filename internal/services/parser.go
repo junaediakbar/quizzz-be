@@ -412,7 +412,7 @@ func ParseQuestionsWithAI(text string, images []string, mode string) (*ParseResu
 Parse the given text and/or exam images into structured JSON questions.
 
 Rules:
-1. Identify question types: multiple-choice, true-false, short-answer, essay, matching, fill-blank
+1. Identify question types: multiple-choice, true-false, short-answer, essay, matching, fill-blank, step-by-step
 2. Extract options for multiple-choice questions
 3. Identify the correct answer
 4. Assign difficulty: easy, medium, or hard
@@ -457,7 +457,9 @@ Output ONLY valid JSON array in this exact format:
 
 For true/false questions remove "options" from output; correct_answer is "true" or "false".
 
-For short-answer, essay, matching, fill-blank: omit "options" when not applicable; correct_answer is model answer or grading key.`
+For short-answer, essay, matching, fill-blank: omit "options" when not applicable; correct_answer is model answer or grading key.
+
+20. STEP-BY-STEP: use type "step-by-step" for a multi-stage problem whose source lists ordered steps ("Langkah 1:", "Langkah 2:", "Step 1:", or lines written as "Langkah N: <instruksi> | Kunci: <jawaban>"). "options" holds the step instructions in order. "correct_answer" is a JSON array STRING with one answer key per step, in the same order and the same count, e.g. "[\"3x = 15\", \"x = 5\"]". Do not use step-by-step for a plain question with a single answer.`
 
 	var response string
 	var err error
@@ -720,6 +722,7 @@ var (
 	reOptionLetter = regexp.MustCompile(`^\**\s*[-•*]?\s*([a-eA-E])\s*[.)]\s*\**\s*(.+)$`)
 	reAnswerLine   = regexp.MustCompile(`(?i)^\**\s*[-•*]?\s*(kunci\s*jawaban|kunci|jawaban\s*benar|jawaban|correct\s*answer|answer|ans)\s*[:=]\s*(.+?)\s*\**\s*$`)
 	reExplainLine  = regexp.MustCompile(`(?i)^\**\s*[-•*]?\s*(pembahasan|penjelasan|explanation|alasan)\s*[:=]\s*(.+?)\s*\**\s*$`)
+	reStepLine     = regexp.MustCompile(`(?i)^\**\s*(langkah|step)\s*\d*\s*[:.)]\s*(.+?)\s*\|\s*(kunci|jawaban)\s*[:=]\s*(.+?)\s*\**\s*$`)
 	reImageMeta    = regexp.MustCompile(`(?i)^\**\s*[-•*]?\s*(gambar|image|img|foto)\s*[:=]\s*(.+?)\s*\**\s*$`)
 	reDiffMeta     = regexp.MustCompile(`(?i)^\**\s*[-•*]?\s*(tingkat|kesulitan|difficulty)\s*[:=]\s*(.+?)\s*\**\s*$`)
 	reOtherMeta    = regexp.MustCompile(`(?i)^\**\s*[-•*]?\s*(kelas|mapel|mata\s*pelajaran|bab|halaman|hal|tipe|jenis|jumlah|dibuat|sumber|versi|credit|kredit|alt|penulis|author)\s*[:=]`)
@@ -838,9 +841,11 @@ func normalizeQuestionTypeLoose(t string) string {
 		return "essay"
 	case "menjodohkan", "memasangkan", "match":
 		return "matching"
+	case "step-by-step", "step by step", "stepbystep", "bertahap", "langkah":
+		return "step-by-step"
 	}
 	switch s {
-	case "multiple-choice", "true-false", "short-answer", "essay", "matching", "fill-blank":
+	case "multiple-choice", "true-false", "short-answer", "essay", "matching", "fill-blank", "step-by-step":
 		return s
 	}
 	return ""
@@ -1286,6 +1291,7 @@ func ParseQuestionsSimple(text string) *ParseResult {
 	var pendingImages []string
 	currentPart := ""
 	optionStyle := ""
+	var steps, stepKeys []string
 
 	flush := func() {
 		if current == nil {
@@ -1294,6 +1300,13 @@ func ParseQuestionsSimple(text string) *ParseResult {
 		q := *current
 		if len(options) > 0 {
 			q.Options = append([]string{}, options...)
+		}
+		if len(steps) > 0 {
+			// Kunci per langkah = JSON array string, sama dengan format AI.
+			keysJSON, _ := json.Marshal(stepKeys)
+			q.Type = "step-by-step"
+			q.Options = append([]string{}, steps...)
+			q.CorrectAnswer = string(keysJSON)
 		}
 		for _, u := range pendingImages {
 			q.ImageURLs = appendUniqueURL(q.ImageURLs, u)
@@ -1306,6 +1319,7 @@ func ParseQuestionsSimple(text string) *ParseResult {
 		current = nil
 		options = nil
 		optionStyle = ""
+		steps, stepKeys = nil, nil
 	}
 
 	for _, raw := range lines {
@@ -1393,6 +1407,12 @@ func ParseQuestionsSimple(text string) *ParseResult {
 					declaredParts[i].Instruction = strings.TrimSpace(cleanMarkdownLine(line))
 				}
 			}
+			continue
+		}
+
+		if m := reStepLine.FindStringSubmatch(line); m != nil {
+			steps = append(steps, strings.TrimSpace(m[2]))
+			stepKeys = append(stepKeys, strings.TrimSpace(m[4]))
 			continue
 		}
 
