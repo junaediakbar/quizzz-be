@@ -200,6 +200,7 @@ func main() {
 	examsRead.Use(middleware.AuthMiddleware)
 	examsRead.Get("/", examHandler.ListExams)
 	examsRead.Get("/:id", examHandler.GetExam)
+	examsRead.Get("/:id/attempt-status", sessionHandler.AttemptStatus)
 
 	examsWrite := api.Group("/exams")
 	examsWrite.Use(middleware.AuthMiddleware)
@@ -209,6 +210,7 @@ func main() {
 	examsWrite.Delete("/:id", examHandler.DeleteExam)
 	examsWrite.Post("/:id/publish", examHandler.PublishExam)
 	examsWrite.Get("/:id/analytics", examHandler.Analytics)
+	examsWrite.Get("/:id/live", sessionHandler.ExamLive)
 
 	// Sessions (authenticated; handler enforces student for start/submit)
 	sessions := api.Group("/sessions")

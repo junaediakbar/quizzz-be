@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/junaediakbar/quizzz-backend/models"
 )
@@ -140,4 +141,46 @@ func (r *SessionRepository) UpdateWithTx(tx *sql.Tx, session *models.ExamSession
 		return fmt.Errorf("failed to update session: %w", err)
 	}
 	return nil
+}
+
+// LiveSessionRow is a student session of one exam joined with the student's name.
+type LiveSessionRow struct {
+	SessionID     string
+	StudentID     string
+	StudentName   string
+	AttemptNumber int
+	Status        string
+	StartedAt     *time.Time
+	SubmittedAt   *time.Time
+	UpdatedAt     time.Time
+	Answers       string
+}
+
+// ListLiveByExam returns all sessions of an exam (latest attempt first per student
+// is not enforced here; the handler decides what to show).
+func (r *SessionRepository) ListLiveByExam(examID string) ([]LiveSessionRow, error) {
+	query := `
+		SELECT s.id, s.student_id, COALESCE(u.name, ''), s.attempt_number, s.status,
+		       s.started_at, s.submitted_at, s.updated_at, COALESCE(s.answers::text, '{}')
+		FROM exam_sessions s
+		LEFT JOIN users u ON u.id = s.student_id
+		WHERE s.exam_id = $1
+		ORDER BY s.updated_at DESC
+	`
+	rows, err := r.db.Query(query, examID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list live sessions: %w", err)
+	}
+	defer rows.Close()
+
+	out := []LiveSessionRow{}
+	for rows.Next() {
+		var row LiveSessionRow
+		if err := rows.Scan(&row.SessionID, &row.StudentID, &row.StudentName, &row.AttemptNumber,
+			&row.Status, &row.StartedAt, &row.SubmittedAt, &row.UpdatedAt, &row.Answers); err != nil {
+			return nil, fmt.Errorf("failed to scan live session: %w", err)
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }

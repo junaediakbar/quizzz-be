@@ -318,6 +318,63 @@ func (h *SessionHandler) buildStudentQuestions(exam *models.Exam, links []reposi
 	return questions, nil
 }
 
+// AttemptStatus GET /exams/:id/attempt-status (murid)
+// Dipakai UI untuk menampilkan tombol yang benar sebelum masuk ujian:
+// "Mulai ujian" (boleh attempt baru), "Lanjutkan ujian" (ada sesi berjalan),
+// atau "Lihat Hasil" (batas attempt tercapai).
+func (h *SessionHandler) AttemptStatus(c *fiber.Ctx) error {
+	if c.Locals("user_role") != "student" {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "Only students can check attempt status"})
+	}
+	studentID := c.Locals("user_id").(string)
+	id := c.Params("id")
+	if rejectInvalidUUID(c, "id", id) {
+		return nil
+	}
+	exam, err := h.examRepo.FindByID(id)
+	if err != nil {
+		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Exam not found"})
+	}
+
+	maxAttempts := exam.Config.MaxAttempts
+	unlimited := maxAttempts <= 0
+
+	attemptsUsed := 0
+	inProgress := false
+	submitted := false
+	var score *int
+	sessionID := ""
+	if existing, err := h.sessionRepo.FindByExamAndStudent(id, studentID); err == nil {
+		sessionID = existing.ID
+		score = existing.Score
+		inProgress = existing.Status == "in-progress"
+		submitted = existing.Status == "submitted" || existing.Status == "graded"
+		if cnt, cntErr := h.sessionRepo.CountAttempts(id, studentID); cntErr == nil {
+			attemptsUsed = cnt
+		}
+	}
+
+	canStart := unlimited || !submitted || attemptsUsed < maxAttempts
+
+	resp := fiber.Map{
+		"attempts_used": attemptsUsed,
+		"max_attempts":  maxAttempts,
+		"unlimited":     unlimited,
+		"in_progress":   inProgress,
+		"can_start":     canStart,
+		"session_id":    sessionID,
+	}
+	if score != nil {
+		resp["score"] = *score
+	}
+	if submitted && sessionID != "" {
+		if res, resErr := h.resultRepo.FindBySessionID(sessionID); resErr == nil {
+			resp["result_id"] = res.ID
+		}
+	}
+	return c.JSON(resp)
+}
+
 // GetSession GET /sessions/:id
 func (h *SessionHandler) GetSession(c *fiber.Ctx) error {
 	id := c.Params("id")
@@ -503,6 +560,28 @@ func (h *SessionHandler) SubmitExam(c *fiber.Ctx) error {
 				pts = maxPts
 				totalScore += pts
 			}
+		case "step-by-step":
+			// Penilaian parsial per langkah: poin = maxPts * langkah_benar / total_langkah.
+			keys := present.StepAnswersSlice(correct)
+			if len(keys) > 0 {
+				correctSteps, details := present.StepByStepGrade(stuAns, correct, keys)
+				pts = maxPts * correctSteps / len(keys)
+				if pts > 0 {
+					totalScore += pts
+				}
+				isCorrect = correctSteps == len(keys)
+				feedback, _ := json.Marshal(map[string]interface{}{
+					"kind":          "step-by-step",
+					"total_steps":   len(keys),
+					"correct_steps": correctSteps,
+					"steps":         details,
+				})
+				fb := string(feedback)
+				if err := h.resultRepo.InsertAnswerReviewWithTx(tx, s.ID, link.QuestionID, stuAns, correct, isCorrect, pts, maxPts, &fb); err != nil {
+					return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to save reviews"})
+				}
+				continue
+			}
 		case "essay", "matching":
 			// Manual grading — no auto points
 			pts = 0
@@ -668,4 +747,87 @@ func (h *SessionHandler) LogProctoringEvent(c *fiber.Ctx) error {
 	}
 
 	return c.Status(http.StatusCreated).JSON(fiber.Map{"ok": true})
+}
+
+type liveStudentItem struct {
+	SessionID     string            `json:"session_id"`
+	StudentID     string            `json:"student_id"`
+	StudentName   string            `json:"student_name"`
+	AttemptNumber int               `json:"attempt_number"`
+	Status        string            `json:"status"`
+	StartedAt     *time.Time        `json:"started_at,omitempty"`
+	SubmittedAt   *time.Time        `json:"submitted_at,omitempty"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+	AnsweredCount int               `json:"answered_count"`
+	Answers       map[string]string `json:"answers"`
+}
+
+// ExamLive GET /exams/:id/live — guru pemilik ujian melihat sesi aktif murid
+// beserta jawaban sementara (tersimpan tiap murid mengisi jawaban).
+func (h *SessionHandler) ExamLive(c *fiber.Ctx) error {
+	examID := c.Params("id")
+	if rejectInvalidUUID(c, "id", examID) {
+		return nil
+	}
+	userID := c.Locals("user_id").(string)
+	role := c.Locals("user_role").(string)
+
+	exam, err := h.examRepo.FindByID(examID)
+	if err != nil {
+		if errors.Is(err, repositories.ErrExamNotFound) {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Exam not found"})
+		}
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load exam"})
+	}
+	if role == "teacher" && exam.CreatedBy != userID {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "Forbidden"})
+	}
+
+	links, err := h.examRepo.GetExamQuestionLinks(examID)
+	if err != nil {
+		log.Printf("ExamLive GetExamQuestionLinks: %v", err)
+		links = nil
+	}
+
+	rows, err := h.sessionRepo.ListLiveByExam(examID)
+	if err != nil {
+		log.Printf("ExamLive ListLiveByExam: %v", err)
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load live sessions"})
+	}
+
+	items := make([]liveStudentItem, 0, len(rows))
+	for _, r := range rows {
+		answers := map[string]string{}
+		_ = json.Unmarshal([]byte(r.Answers), &answers)
+		if answers == nil {
+			answers = map[string]string{}
+		}
+		filled := 0
+		for _, v := range answers {
+			if strings.TrimSpace(v) != "" {
+				filled++
+			}
+		}
+		items = append(items, liveStudentItem{
+			SessionID:     r.SessionID,
+			StudentID:     r.StudentID,
+			StudentName:   r.StudentName,
+			AttemptNumber: r.AttemptNumber,
+			Status:        r.Status,
+			StartedAt:     r.StartedAt,
+			SubmittedAt:   r.SubmittedAt,
+			UpdatedAt:     r.UpdatedAt,
+			AnsweredCount: filled,
+			Answers:       answers,
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"exam_id":         examID,
+		"exam_title":      exam.Title,
+		"total_questions": len(links),
+		"sessions":        items,
+		"count":           len(items),
+		"server_time":     time.Now(),
+	})
 }
