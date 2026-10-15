@@ -50,6 +50,19 @@ func GetAIConfig() AIConfig {
 	model := strings.TrimSpace(os.Getenv("AI_PARSER_MODEL"))
 
 	switch provider {
+	case "openai":
+		// Gateway OpenAI-compatible (mis. proxy): kirim Bearer key mentah, bukan JWT Zhipu.
+		// Tanpa base URL, AI dinonaktifkan (kunci dikosongkan).
+		apiKey := strings.TrimSpace(os.Getenv("AI_PARSER_API_KEY"))
+		if baseURL == "" {
+			apiKey = ""
+		}
+		return AIConfig{
+			BaseURL:  strings.TrimSuffix(baseURL, "/"),
+			APIKey:   apiKey,
+			Model:    model,
+			Provider: "openai",
+		}
 	case "gemini":
 		if baseURL == "" {
 			baseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -140,7 +153,7 @@ func pickVisionChatModel(config AIConfig) string {
 	if vm := strings.TrimSpace(os.Getenv("AI_PARSER_VISION_MODEL")); vm != "" {
 		return vm
 	}
-	if config.Provider == "gemini" {
+	if config.Provider == "gemini" || config.Provider == "openai" {
 		return config.Model
 	}
 	// Zhipu/BigModel vision model (glm-4v-flash dihentikan untuk banyak akun).
@@ -220,7 +233,7 @@ func doChatRequest(config AIConfig, payload map[string]interface{}, timeout time
 	}
 	req.Header.Set("Content-Type", "application/json")
 	switch strings.ToLower(config.Provider) {
-	case "gemini":
+	case "gemini", "openai":
 		req.Header.Set("Authorization", "Bearer "+config.APIKey)
 	default:
 		token, err := generateZhipuToken(config.APIKey, 3600)

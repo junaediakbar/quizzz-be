@@ -16,6 +16,31 @@ func findQ(t *testing.T, res *ParseResult, idx int) ParsedQuestion {
 	return res.Questions[idx]
 }
 
+func TestGetAIConfigOpenAIProviderUsesRawKey(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("ZAI_API_KEY", "zhipu-id.zhipu-secret")
+	t.Setenv("AI_PARSER_PROVIDER", "openai")
+	t.Setenv("AI_PARSER_BASE_URL", "http://gateway.example:20128/v1/")
+	t.Setenv("AI_PARSER_API_KEY", "gateway-key")
+	t.Setenv("AI_PARSER_MODEL", "cfp/zai-org/glm-4.7-flash")
+
+	cfg := GetAIConfig()
+	if cfg.Provider != "openai" || cfg.APIKey != "gateway-key" {
+		t.Errorf("provider/key = %q/%q, want openai/gateway-key", cfg.Provider, cfg.APIKey)
+	}
+	if cfg.BaseURL != "http://gateway.example:20128/v1" {
+		t.Errorf("base url = %q (trailing slash must be trimmed)", cfg.BaseURL)
+	}
+	if cfg.Model != "cfp/zai-org/glm-4.7-flash" {
+		t.Errorf("model = %q", cfg.Model)
+	}
+
+	t.Setenv("AI_PARSER_BASE_URL", "")
+	if key := GetAIConfig().APIKey; key != "" {
+		t.Errorf("without base url the key must be cleared, got %q", key)
+	}
+}
+
 func TestParseStepByStepMarkerFormat(t *testing.T) {
 	text := `1. Tentukan x dari 3x + 5 = 20.
 Langkah 1: Kurangkan kedua ruas dengan 5 | Kunci: 3x = 15
