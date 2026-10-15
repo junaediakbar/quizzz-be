@@ -265,6 +265,10 @@ func postChatCompletion(config AIConfig, model string, messages []map[string]int
 	if useThinkingParam {
 		payload["thinking"] = map[string]interface{}{"type": "disabled"}
 	}
+	if config.Provider == "openai" {
+		// Gateway OpenAI-compatible: paksa output JSON valid (wrapper {"questions": [...]} ditangani extractJSONArray).
+		payload["response_format"] = map[string]interface{}{"type": "json_object"}
+	}
 
 	resp, body, err := doChatRequest(config, payload, timeout)
 	if err != nil {
