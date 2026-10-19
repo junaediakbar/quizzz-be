@@ -775,6 +775,22 @@ func cleanMarkdownLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// invisibleChars maps no-break spaces to plain spaces and drops zero-width
+// characters; text copied from ChatGPT/Docs carries them and they defeat the
+// line regexes (RE2's \s only matches ASCII whitespace).
+var invisibleChars = strings.NewReplacer(
+	"\u00a0", " ", "\u202f", " ",
+	"\u200b", "", "\u200c", "", "\u200d", "", "\ufeff", "",
+)
+
+// cleanStepLine strips markdown and bullet decoration ("> ", "### ", "- ",
+// "**Langkah 1:**", backticks) so reStepLine also matches decorated step lines.
+func cleanStepLine(s string) string {
+	s = strings.NewReplacer("**", "", "__", "", "`", "").Replace(s)
+	s = strings.TrimLeft(strings.TrimSpace(s), "#>-•*_ \t")
+	return strings.TrimRight(s, "*_ \t")
+}
+
 func isDividerLine(line string) bool {
 	s := strings.TrimSpace(line)
 	if s == "" {
@@ -1297,6 +1313,7 @@ func ParseQuestionsSimple(text string) *ParseResult {
 		}
 	}
 
+	text = invisibleChars.Replace(text)
 	text = ensureFirstQuestionNumbered(text)
 	lines := strings.Split(text, "\n")
 
@@ -1427,7 +1444,7 @@ func ParseQuestionsSimple(text string) *ParseResult {
 			continue
 		}
 
-		if m := reStepLine.FindStringSubmatch(line); m != nil {
+		if m := reStepLine.FindStringSubmatch(cleanStepLine(line)); m != nil {
 			steps = append(steps, strings.TrimSpace(m[2]))
 			stepKeys = append(stepKeys, strings.TrimSpace(m[4]))
 			continue

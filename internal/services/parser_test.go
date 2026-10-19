@@ -66,6 +66,42 @@ Langkah 2: Bagi kedua ruas dengan 3 | Kunci: x = 5`
 	}
 }
 
+// Teks yang disalin dari ChatGPT/Docs sering membawa penanda markdown atau
+// karakter tak terlihat. Baris langkah seperti itu dulu lolos sebagai teks soal
+// (tipe fill-blank, kunci ikut tampil ke murid).
+func TestParseStepByStepToleratesMarkdownAndInvisibleChars(t *testing.T) {
+	const step = "Langkah 1: 12 ÷ 3 = .... | Kunci: 4"
+	cases := map[string]string{
+		"blockquote":  "> " + step,
+		"heading":     "### " + step,
+		"backtick":    "`" + step + "`",
+		"underscore":  "_" + step + "_",
+		"dash bullet": "- " + step,
+		"dot bullet":  "• " + step,
+		"bold":        "**Langkah 1:** 12 ÷ 3 = .... | **Kunci:** 4",
+		"nbsp":        "Langkah\u00a01:\u00a012 ÷ 3 = ....\u00a0|\u00a0Kunci:\u00a04",
+		"zero-width":  "\u200b" + step + "\ufeff",
+	}
+	for name, line := range cases {
+		t.Run(name, func(t *testing.T) {
+			res := ParseQuestionsSimple("1. Tentukan apakah 3 merupakan faktor dari 12.\n" + line)
+			q := findQ(t, res, 0)
+			if q.Type != "step-by-step" {
+				t.Fatalf("type = %q, want step-by-step (content %q)", q.Type, q.Content)
+			}
+			if len(q.Options) != 1 || q.Options[0] != "12 ÷ 3 = ...." {
+				t.Errorf("steps = %q", q.Options)
+			}
+			if q.CorrectAnswer != `["4"]` {
+				t.Errorf("keys = %s", q.CorrectAnswer)
+			}
+			if q.Content != "Tentukan apakah 3 merupakan faktor dari 12." {
+				t.Errorf("content = %q (step line leaked into the stem)", q.Content)
+			}
+		})
+	}
+}
+
 func TestParseNumberedFormatWithImageMarkers(t *testing.T) {
 	text := `[!above https://cdn.example.com/diagram.png]
 1. 5² dibaca ....
